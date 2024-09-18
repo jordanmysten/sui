@@ -114,7 +114,7 @@ pub struct MovePackage {
 // associated constants before storing in any serialization setting.
 /// Rust representation of upgrade policy constants in `sui::package`.
 #[repr(u8)]
-#[derive(Display, Debug, Clone, Copy)]
+#[derive(Display, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpgradePolicy {
     #[display(fmt = "COMPATIBLE")]
     Compatible = 0,

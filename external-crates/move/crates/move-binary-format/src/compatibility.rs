@@ -10,8 +10,10 @@ use crate::{
     file_format_common::VERSION_5,
     normalized::Module,
 };
-use move_core_types::vm_status::StatusCode;
-
+use move_core_types::{
+    account_address::AccountAddress, identifier::IdentStr, vm_status::StatusCode,
+};
+use crate::file_format::StructDefinition;
 // ***************************************************************************
 // ******************* IMPORTANT NOTE ON COMPATIBILITY ***********************
 // ***************************************************************************
@@ -69,6 +71,106 @@ impl Default for Compatibility {
     }
 }
 
+// FIRST PR implement this
+trait CompatibilityMode: Default {
+    type Error;
+
+    fn module_id_mismatch(
+        &mut self,
+        old_addr: &AccountAddress,
+        old_name: &IdentStr,
+        new_addr: &AccountAddress,
+        new_name: &IdentStr,
+    );
+
+    fn finish(self, &Compatibility) -> Result<(), Self::Error>;
+}
+
+// pull out into second PR
+struct CLICompatabilityMode {
+    // missing_datatype (name)
+    missing_datatype: Vec<>,
+    // ability_mismatch (old, new, struct name)
+    // type param mismatch (old, new, struct name)
+    // field layout mismatch (field diff? which do we have or not have in the new version)
+
+
+    datatype_and_function: Vec<bool>,
+    datatype_layout: Vec<bool>,
+    friend_linking: Vec<bool>,
+    entry_linking: Vec<bool>,
+    no_new_variants: Vec<bool>,
+}
+
+struct ExecutionCompatibilityMode {
+    datatype_and_function_linking: bool,
+    datatype_layout: bool,
+    friend_linking: bool,
+    entry_linking: bool,
+    no_new_variants: bool,
+}
+
+impl Default for ExecutionCompatibilityMode {
+    fn default() -> Self {
+        Self {
+            datatype_and_function_linking: true,
+            datatype_layout: true,
+            friend_linking: true,
+            entry_linking: true,
+            no_new_variants: true,
+        }
+    }
+}
+
+impl CompatibilityMode for ExecutionCompatibilityMode {
+    // TODO unit error
+    type Error = ();
+
+    fn module_id_mismatch(
+        &mut self,
+        _old_addr: &AccountAddress,
+        _old_name: &IdentStr,
+        _new_addr: &AccountAddress,
+        _new_name: &IdentStr,
+    ) {
+        self.datatype_and_function_linking = false;
+    }
+
+    //
+
+    fn finish(&self, compatability: &Compatibility) -> Result<(), > {
+
+
+        if compatability.check_datatype_and_pub_function_linking && !datatype_and_function_linking {
+            return Err(PartialVMError::new(
+                StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE,
+            ));
+        }
+        if compatability.check_datatype_layout && !datatype_layout {
+            return Err(PartialVMError::new(
+                StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE,
+            ));
+        }
+        if compatability.check_friend_linking && !friend_linking {
+            return Err(PartialVMError::new(
+                StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE,
+            ));
+        }
+        if compatability.check_private_entry_linking && !entry_linking {
+            return Err(PartialVMError::new(
+                StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE,
+            ));
+        }
+        if compatability.disallow_new_variants && !no_new_variants {
+            return Err(PartialVMError::new(
+                StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE,
+            ));
+        }
+    }
+}
+
+
+
 impl Compatibility {
     pub fn full_check() -> Self {
         Self::default()
@@ -92,15 +194,25 @@ impl Compatibility {
 
     /// Check compatibility for `new_module` relative to old module `old_module`.
     pub fn check(&self, old_module: &Module, new_module: &Module) -> PartialVMResult<()> {
-        let mut datatype_and_function_linking = true;
-        let mut datatype_layout = true;
-        let mut friend_linking = true;
-        let mut entry_linking = true;
-        let mut no_new_variants = true;
+        self.check_::<ExecutionCompatibilityMode>(old_module, new_module)
+            .map_err(|_| PartialVMError::new(StatusCode::BACKWARD_INCOMPATIBLE_MODULE_UPDATE))
+    }
+
+    pub fn check_<M: CompatibilityMode>(
+        &self,
+        old_module: &Module,
+        new_module: &Module,
+    ) -> Result<(), M::Error> {
+        let mut context = M::default();
 
         // module's name and address are unchanged
         if old_module.address != new_module.address || old_module.name != new_module.name {
-            datatype_and_function_linking = false;
+            context.module_id_mismatch(
+                &old_module.address,
+                &old_module.name,
+                &new_module.address,
+                &new_module.name,
+            );
         }
 
         // old module's structs are a subset of the new module's structs
@@ -109,22 +221,28 @@ impl Compatibility {
                 // Struct not present in new . Existing modules that depend on this struct will fail to link with the new version of the module.
                 // Also, struct layout cannot be guaranteed transitively, because after
                 // removing the struct, it could be re-added later with a different layout.
+
+                // function missing_struct()
+                // CLI:
+
                 datatype_and_function_linking = false;
                 datatype_layout = false;
                 break;
             };
 
+            // ability mismatch, store old new
             if !datatype_abilities_compatible(
                 self.disallowed_new_abilities,
                 old_struct.abilities,
                 new_struct.abilities,
-            ) || !datatype_type_parameters_compatible(
+            ) || !datatype_type_parameters_compatible( // type param mismatch
                 self.disallow_change_datatype_type_params,
                 &old_struct.type_parameters,
                 &new_struct.type_parameters,
             ) {
                 datatype_and_function_linking = false;
             }
+            // create a diff of the fields?
             if new_struct.fields != old_struct.fields {
                 // Fields changed. Code in this module will fail at runtime if it tries to
                 // read a previously published struct value
@@ -132,15 +250,22 @@ impl Compatibility {
                 // choose that changing the name (but not position or type) of a field is
                 // compatible. The VM does not care about the name of a field
                 // (it's purely informational), but clients presumably do.
+
+                // field layout mismatch
                 datatype_layout = false
             }
         }
 
+        // enums relatively similar but has a variant check
+        // variants have fields which need checking
+        // store
         for (name, old_enum) in &old_module.enums {
             let Some(new_enum) = new_module.enums.get(name) else {
                 // Enum not present in new. Existing modules that depend on this enum will fail to link with the new version of the module.
                 // Also, enum layout cannot be guaranteed transitively, because after
                 // removing the enum, it could be re-added later with a different layout.
+
+                // number of varian
                 datatype_and_function_linking = false;
                 datatype_layout = false;
                 break;
@@ -208,12 +333,14 @@ impl Compatibility {
         // friend list. But for simplicity, we decided to go to the more restrictive form now and
         // we may revisit this in the future.
         for (name, old_func) in &old_module.functions {
+            // if we dont find a function in the new module
             let Some(new_func) = new_module.functions.get(name) else {
+                // we error if the function is a friend
                 if old_func.visibility == Visibility::Friend {
                     friend_linking = false;
-                } else if old_func.visibility != Visibility::Private {
+                } else if old_func.visibility != Visibility::Private { // we error if the function is private
                     datatype_and_function_linking = false;
-                } else if old_func.is_entry && self.check_private_entry_linking {
+                } else if old_func.is_entry && self.check_private_entry_linking { // we flag entry linking
                     // This must be a private entry function. So set the link breakage if we're
                     // checking for that.
                     entry_linking = false;

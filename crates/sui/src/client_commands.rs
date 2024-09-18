@@ -41,13 +41,7 @@ use sui_source_validation::{BytecodeSourceVerifier, ValidationMode};
 
 use shared_crypto::intent::Intent;
 use sui_json::SuiJsonValue;
-use sui_json_rpc_types::{
-    Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData,
-    SuiExecutionStatus, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse,
-    SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData,
-    SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse,
-    SuiTransactionBlockResponseOptions,
-};
+use sui_json_rpc_types::{Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData, SuiExecutionStatus, SuiMoveNormalizedModule, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse, SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData, SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions};
 use sui_keys::keystore::AccountKeystore;
 use sui_move_build::{
     build_from_resolution_graph, check_invalid_dependencies, check_unpublished_dependencies,
@@ -94,6 +88,8 @@ use tabled::{
 };
 
 use tracing::{debug, info};
+use sui_types::execution_config_utils::to_binary_config;
+use sui_types::move_package::{normalize_deserialized_modules, UpgradePolicy};
 
 #[path = "unit_tests/profiler_tests.rs"]
 #[cfg(test)]
@@ -866,6 +862,10 @@ impl SuiClientCommands {
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
                 let chain_id = client.read_api().get_chain_identifier().await.ok();
+                let protocol_config = ProtocolConfig::get_for_version(
+                    ProtocolVersion::MAX,
+                    Chain::Unknown,
+                );
 
                 let package_path =
                     package_path
@@ -910,6 +910,55 @@ impl SuiClientCommands {
                 }
                 let (package_id, compiled_modules, dependencies, package_digest, upgrade_policy) =
                     upgrade_result?;
+
+                let new_modules = compiled_modules
+                    .iter()
+                    .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(anyhow!("Unable to check compatibility of new module"))?;
+
+                // TODO use get object API
+                let obj_id = ObjectID::from(addr);
+
+                // fetch the Sui object at the address specified for the package in the local resolution table
+                // if future packages with a large set of dependency packages prove too slow to verify,
+                // batched object fetching should be added to the ReadApi & used here
+                let obj_read = self
+                    .rpc_client
+                    .get_object_with_options(obj_id, SuiObjectDataOptions::new().with_bcs())
+                    .await
+                    .map_err(Error::DependencyObjectReadFailure)?;
+
+                let obj = obj_read
+                    .into_object()
+                    .map_err(Error::SuiObjectRefFailure)?
+                    .bcs
+                    .ok_or_else(|| {
+                        Error::DependencyObjectReadFailure(SdkError::DataError(
+                            "Bcs field is not found".to_string(),
+                        ))
+                    })?;
+
+                match obj {
+                    SuiRawData::Package(pkg) => Ok(pkg),
+                    SuiRawData::MoveObject(move_obj) => {
+                        Err(Error::ObjectFoundWhenPackageExpected(obj_id, move_obj))
+                    }
+                }
+
+
+                let existing_modules = client
+                    .read_api()
+                    .get_normalized_move_modules_by_package(package_id)
+                    .await
+                    .map_err(|e| anyhow!("Unable to retreive existing module on chain"))?;
+
+                let new_modules: BTreeMap<String, SuiMoveNormalizedModule> = normalize_deserialized_modules(new_modules.iter())
+                    .into_iter()
+                    .map(|m| (m.0, m.1.into()))
+                    .collect();
+
+                check_compatibility(existing_modules, new_modules, upgrade_policy)?;
 
                 let tx_kind = client
                     .transaction_builder()
@@ -2219,6 +2268,76 @@ impl Display for SuiClientCommandResult {
         }
         write!(f, "{}", writer.trim_end_matches('\n'))
     }
+}
+
+fn check_compatibility(existing_modules: BTreeMap<String, SuiMoveNormalizedModule>, mut new_modules: BTreeMap<String, SuiMoveNormalizedModule>, policy: u8) -> Result<(), anyhow::Error> {
+    // TODO anyhow!
+    let policy = UpgradePolicy::try_from(policy).unwrap();
+    // For every module in the existing, check against its newer version
+    for (name, cur_module) in existing_modules.iter() {
+        if let Some(new_module) = new_modules.remove(name) {
+            module_compatibility_errors(cur_module, &new_module, &policy)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn module_compatibility_errors(existing_module: &SuiMoveNormalizedModule, new_module: &SuiMoveNormalizedModule, policy: &UpgradePolicy) -> Result<(), anyhow::Error> {
+    // check name
+    if existing_module.name != new_module.name {
+        println!("Name mismatch");
+    }
+    match policy {
+        _ => {
+            if policy == &UpgradePolicy::DepOnly {
+                // check each len is the same
+                if existing_module.structs.len() != new_module.structs.len() {
+                    return Err(anyhow!("Dependency only policy: struct mismatch"));
+                }
+                if existing_module.exposed_functions.len() != new_module.exposed_functions.len() {
+                    return Err(anyhow!("Dependency only policy: functions mismatch"));
+                }
+                if existing_module.friends.len() != new_module.friends.len() {
+                    return Err(anyhow!("Dependency only upgrade policy: friends mismatch"));
+                }
+            }
+
+            // strict equality necessary unless compatible policy
+            if policy != &UpgradePolicy::Compatible {
+                for friend in existing_module.friends.iter() {
+                    if !new_module.friends.contains(friend) {
+                        return Err(anyhow!("Existing friend {:?} not found in new module", friend));
+                    }
+                }
+            }
+
+            // check structs for strict equality
+            for (name, struct_) in existing_module.structs.iter() {
+                if let Some(new_struct) = new_module.structs.get(name) {
+                    if struct_ != new_struct {
+                        return Err(anyhow!("Struct {} mismatch", name));
+                    }
+                } else {
+                    return Err(anyhow!("Existing struct {} not found in new module", name));
+                }
+            }
+
+            // check functions, since these are external functions we end up ignoring non public?
+            // additive and deponly would not have some checks run against private functions since they are missing
+            for (name, func) in existing_module.exposed_functions.iter() {
+                if let Some(new_func) = new_module.exposed_functions.get(name) {
+                    if func != new_func {
+                        return Err(anyhow!("Function {} mismatch", name));
+                    }
+                } else {
+                    return Err(anyhow!("Function {} not found in new module", name));
+                }
+            }
+        },
+    }
+
+    Ok(())
 }
 
 fn convert_number_to_string(value: Value) -> Value {
