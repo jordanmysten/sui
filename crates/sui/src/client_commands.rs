@@ -41,13 +41,7 @@ use sui_source_validation::{BytecodeSourceVerifier, ValidationMode};
 
 use shared_crypto::intent::Intent;
 use sui_json::SuiJsonValue;
-use sui_json_rpc_types::{
-    Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData,
-    SuiExecutionStatus, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse,
-    SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData,
-    SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse,
-    SuiTransactionBlockResponseOptions,
-};
+use sui_json_rpc_types::{Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData, SuiExecutionStatus, SuiMoveNormalizedModule, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse, SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData, SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions};
 use sui_keys::keystore::AccountKeystore;
 use sui_move_build::{
     build_from_resolution_graph, check_invalid_dependencies, check_unpublished_dependencies,
@@ -94,6 +88,8 @@ use tabled::{
 };
 
 use tracing::{debug, info};
+use sui_types::execution_config_utils::to_binary_config;
+use sui_types::move_package::{normalize_deserialized_modules, UpgradePolicy};
 
 #[path = "unit_tests/profiler_tests.rs"]
 #[cfg(test)]
@@ -866,6 +862,10 @@ impl SuiClientCommands {
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
                 let chain_id = client.read_api().get_chain_identifier().await.ok();
+                let protocol_config = ProtocolConfig::get_for_version(
+                    ProtocolVersion::MAX,
+                    Chain::Unknown,
+                );
 
                 let package_path =
                     package_path
@@ -910,6 +910,50 @@ impl SuiClientCommands {
                 }
                 let (package_id, compiled_modules, dependencies, package_digest, upgrade_policy) =
                     upgrade_result?;
+
+                let new_modules = compiled_modules
+                    .iter()
+                    .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(anyhow!("Unable to check compatibility of new module"))?;
+
+                // TODO use get object API
+                let obj_id = ObjectID::from(addr);
+
+                let obj_read = client
+                    .read_api()
+                    .get_object_with_options(obj_id, SuiObjectDataOptions::new().with_bcs())
+                    .await
+                    .map_err(anyhow!("Unable to get existing module"))?;
+
+                let obj = obj_read
+                    .into_object()
+                    .map_err(anyhow!("Unable to read object"))?
+                    .bcs
+                    .ok_or_else(|| {
+                        anyhow!("Unable to read object")
+                    })?;
+
+                let existing_package = match obj {
+                    SuiRawData::Package(pkg) => Ok(pkg),
+                    SuiRawData::MoveObject(move_obj) => {
+                        Err(anyhow!("Object found when package expected"))
+                    }
+                }?;
+
+
+                let existing_modules = client
+                    .read_api()
+                    .get_normalized_move_modules_by_package(package_id)
+                    .await
+                    .map_err(|e| anyhow!("Unable to retreive existing module on chain"))?;
+
+                let new_modules: BTreeMap<String, SuiMoveNormalizedModule> = normalize_deserialized_modules(new_modules.iter())
+                    .into_iter()
+                    .map(|m| (m.0, m.1.into()))
+                    .collect();
+
+                check_compatibility(existing_modules, new_modules, upgrade_policy)?;
 
                 let tx_kind = client
                     .transaction_builder()
