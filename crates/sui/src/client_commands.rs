@@ -6,6 +6,7 @@ use crate::{
     client_ptb::ptb::PTB,
     displays::Pretty,
     key_identity::{get_identity_address, KeyIdentity},
+    upgrade_compatibility::check_compatibility,
     verifier_meter::{AccumulatingMeter, Accumulator},
 };
 use std::{
@@ -866,6 +867,8 @@ impl SuiClientCommands {
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
                 let chain_id = client.read_api().get_chain_identifier().await.ok();
+                let protocol_config =
+                    ProtocolConfig::get_for_version(ProtocolVersion::MAX, Chain::Unknown);
 
                 let package_path =
                     package_path
@@ -910,6 +913,9 @@ impl SuiClientCommands {
                 }
                 let (package_id, compiled_modules, dependencies, package_digest, upgrade_policy) =
                     upgrade_result?;
+
+                check_compatibility(&client, package_id, &compiled_modules, protocol_config)
+                    .await?;
 
                 let tx_kind = client
                     .transaction_builder()
