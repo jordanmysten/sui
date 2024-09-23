@@ -76,6 +76,8 @@ use sui_types::{
 };
 
 use json_to_table::json_to_table;
+use move_binary_format::compatibility::ExecutionCompatibilityMode;
+use move_binary_format::file_format::AbilitySet;
 use tabled::{
     builder::Builder as TableBuilder,
     settings::{
@@ -915,45 +917,56 @@ impl SuiClientCommands {
                     .iter()
                     .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(anyhow!("Unable to check compatibility of new module"))?;
+                    .map_err(|_| anyhow!("Unable to check compatibility of new module"))?;
 
-                // TODO use get object API
-                let obj_id = ObjectID::from(addr);
-
-                let obj_read = client
+                // TODO this is existing package id right?
+                let existing_obj_read = client
                     .read_api()
-                    .get_object_with_options(obj_id, SuiObjectDataOptions::new().with_bcs())
+                    .get_object_with_options(package_id, SuiObjectDataOptions::new().with_bcs())
                     .await
-                    .map_err(anyhow!("Unable to get existing module"))?;
+                    .map_err(|_| anyhow!("Unable to get existing module"))?;
 
-                let obj = obj_read
+                let existing_obj = existing_obj_read
                     .into_object()
-                    .map_err(anyhow!("Unable to read object"))?
+                    .map_err(|_| anyhow!("Unable to read object"))?
                     .bcs
-                    .ok_or_else(|| {
-                        anyhow!("Unable to read object")
-                    })?;
+                    .ok_or_else(|| anyhow!("Unable to read object"))?;
 
-                let existing_package = match obj {
+                let existing_package = match existing_obj {
                     SuiRawData::Package(pkg) => Ok(pkg),
                     SuiRawData::MoveObject(move_obj) => {
                         Err(anyhow!("Object found when package expected"))
                     }
                 }?;
 
+                let existing_modules = existing_package.module_map
+                    .iter()
+                    .map(|m| CompiledModule::deserialize_with_config(&m.1, &to_binary_config(&protocol_config)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| anyhow!("Unable to check compatibility of existing module"))?;
 
-                let existing_modules = client
-                    .read_api()
-                    .get_normalized_move_modules_by_package(package_id)
-                    .await
-                    .map_err(|e| anyhow!("Unable to retreive existing module on chain"))?;
 
-                let new_modules: BTreeMap<String, SuiMoveNormalizedModule> = normalize_deserialized_modules(new_modules.iter())
-                    .into_iter()
-                    .map(|m| (m.0, m.1.into()))
-                    .collect();
+                use move_binary_format::normalized::Module;
+                use move_binary_format::compatibility::Compatibility;
+                // check the first modules
+                let module1 = Module::new(new_modules.first().ok_or_else(|| anyhow!("No new modules found"))?);
+                let module2 = Module::new(existing_modules.first().ok_or_else(|| anyhow!("No existing modules found"))?);
 
-                check_compatibility(existing_modules, new_modules, upgrade_policy)?;
+
+                // Based off sui-execution crate's usage
+                (Compatibility {
+                    check_datatype_and_pub_function_linking: true,
+                    check_datatype_layout: true,
+                    check_friend_linking: false,
+                    check_private_entry_linking: false,
+                    disallowed_new_abilities: AbilitySet::ALL,
+                    disallow_change_datatype_type_params: true,
+                    // We disallow adding new variants to enums for now
+                    disallow_new_variants: true,
+                })
+                    // TODO use our new mode
+                    .check_::<ExecutionCompatibilityMode>(&module1, &module2)
+                    .map_err(|_| anyhow!("INCOMPATIBLE"))?;
 
                 let tx_kind = client
                     .transaction_builder()
