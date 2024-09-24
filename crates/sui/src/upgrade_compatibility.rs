@@ -1,180 +1,146 @@
+use std::collections::BTreeSet;
 use move_binary_format::compatibility::{Compatibility, CompatibilityMode};
 use move_binary_format::normalized::{Enum, Function, Struct};
 use move_core_types::account_address::AccountAddress;
 use move_core_types::identifier::IdentStr;
+use thiserror::Error;
+use anyhow::{anyhow};
+use move_core_types::language_storage::ModuleId;
 
-struct CLICompatabilityMode {
-    structs_missing_errors: Vec<String>,
-    struct_ability_mismatch_errors: Vec<String>,
-    struct_type_param_mismatch_errors: Vec<String>,
-    struct_field_mismatch_errors: Vec<String>,
-    enum_missing_errors: Vec<String>,
-    enum_ability_mismatch_errors: Vec<String>,
-    enum_type_param_mismatch_errors: Vec<String>,
-    enum_new_variant_errors: Vec<String>,
-    enum_variant_mismatch_errors: Vec<String>,
-    enum_variant_missing_errors: Vec<String>,
-    function_missing_errors: Vec<String>,
-    function_friend_missing_errors: Vec<String>,
-    function_friend_linking_errors: Vec<String>,
-    function_previously_friend_errors: Vec<String>,
-    function_visibility_mismatch_errors: Vec<String>,
-    function_entry_compatibility_errors: Vec<String>,
-
+#[derive(Debug, Error)]
+enum UpgradeCompatibilityModeError {
+    #[error("Struct missing: {}", .0)]
+    StructMissing(Struct),
+    #[error("Struct ability mismatch: {0:?} {1:?}")]
+    StructAbilityMismatch(Struct, Struct),
+    #[error("Struct type param mismatch: {0:?} {1:?}")]
+    StructTypeParamMismatch(Struct, Struct),
+    #[error("Struct field mismatch: {0:?} {1:?}")]
+    StructFieldMismatch(Struct, Struct),
+    #[error("Enum missing: {0:?}")]
+    EnumMissing(Enum),
+    #[error("Enum ability mismatch: {0:?} {1:?}")]
+    EnumAbilityMismatch(Enum, Enum),
+    #[error("Enum type param mismatch: {0:?} {1:?}")]
+    EnumTypeParamMismatch(Enum, Enum),
+    #[error("Enum new variant: {0:?} {1:?}")]
+    EnumNewVariant(Enum, Enum),
+    #[error("Enum variant missing: {0:?} {1:?}")]
+    EnumVariantMissing(Enum, usize),
+    #[error("Enum variant mismatch: {0:?} {1:?} {2:?}")]
+    EnumVariantMismatch(Enum, Enum, usize),
+    #[error("Function missing public: {0:?}")]
+    FunctionMissingPublic(Function),
+    #[error("Function missing friend: {0:?}")]
+    FunctionMissingFriend(Function),
+    #[error("Function missing entry: {0:?}")]
+    FunctionMissingEntry(Function),
+    #[error("Function signature mismatch: {0:?} {1:?}")]
+    FunctionSignatureMismatch(Function, Function),
+    #[error("Function lost public visibility: {0:?}")]
+    FunctionLostPublicVisibility(Function),
+    #[error("Function lost friend visibility: {0:?}")]
+    FunctionLostFriendVisibility(Function),
+    #[error("Function entry compatibility: {0:?} {1:?}")]
+    FunctionEntryCompatibility(Function, Function),
+    #[error("Friend module missing: {0:?} {1:?}")]
+    FriendModuleMissing(BTreeSet<ModuleId>, BTreeSet<ModuleId>),
 }
 
-impl Default for CLICompatabilityMode {
+pub struct CliCompatibilityMode {
+    errors: Vec<UpgradeCompatibilityModeError>,
+}
+
+impl Default for CliCompatibilityMode {
     fn default() -> Self {
         Self {
-            structs_missing_errors: vec![],
-            struct_ability_mismatch_errors: vec![],
-            struct_type_param_mismatch_errors: vec![],
-            struct_field_mismatch_errors: vec![],
-            enum_missing_errors: vec![],
-            enum_ability_mismatch_errors: vec![],
-            enum_type_param_mismatch_errors: vec![],
-            enum_new_variant_errors: vec![],
-            enum_variant_mismatch_errors: vec![],
-            enum_variant_missing_errors: vec![],
-            function_missing_errors: vec![],
-            function_friend_missing_errors: vec![],
-            function_friend_linking_errors: vec![],
-            function_previously_friend_errors: vec![],
-            function_visibility_mismatch_errors: vec![],
-            function_entry_compatibility_errors: vec![],
+            errors: vec![],
         }
     }
 }
 
-impl CompatibilityMode for CLICompatabilityMode {
+impl CompatibilityMode for CliCompatibilityMode {
     type Error = anyhow::Error;
     // ignored, address is not populated pre-tx
-    fn module_id_mismatch(&mut self, old_addr: &AccountAddress, old_name: &IdentStr, new_addr: &AccountAddress, new_name: &IdentStr) {}
+    fn module_id_mismatch(&mut self, _old_addr: &AccountAddress, _old_name: &IdentStr, _new_addr: &AccountAddress, _new_name: &IdentStr) {}
 
-    fn struct_missing(&mut self, addr: &AccountAddress) {
-        self.structs_missing_errors.push(format!("{}::{}", addr, name));
+    fn struct_missing(&mut self, old_struct: &Struct) {
+        self.errors.push(UpgradeCompatibilityModeError::StructMissing(old_struct.clone()));
     }
 
     fn struct_ability_mismatch(&mut self, old_struct: &Struct, new_struct: &Struct) {
-        self.struct_ability_mismatch_errors.push(format!("{}::{}", old_struct.module, old_struct.name));
+        self.errors.push(UpgradeCompatibilityModeError::StructAbilityMismatch(old_struct.clone(), new_struct.clone()));
     }
 
     fn struct_type_param_mismatch(&mut self, old_struct: &Struct, new_struct: &Struct) {
-        self.struct_type_param_mismatch_errors.push(format!("{}::{}", old_struct.module, old_struct.name));
+        self.errors.push(UpgradeCompatibilityModeError::StructTypeParamMismatch(old_struct.clone(), new_struct.clone()));
     }
 
     fn struct_field_mismatch(&mut self, old_struct: &Struct, new_struct: &Struct) {
-        self.struct_field_mismatch_errors.push(format!("{}::{}", old_struct.module, old_struct.name));
+        self.errors.push(UpgradeCompatibilityModeError::StructFieldMismatch(old_struct.clone(), new_struct.clone()));
     }
 
     fn enum_missing(&mut self, old_enum: &Enum) {
-        self.enum_missing_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+        self.errors.push(UpgradeCompatibilityModeError::EnumMissing(old_enum.clone()));
     }
 
     fn enum_ability_mismatch(&mut self, old_enum: &Enum, new_enum: &Enum) {
-        self.enum_ability_mismatch_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+        self.errors.push(UpgradeCompatibilityModeError::EnumAbilityMismatch(old_enum.clone(), new_enum.clone()));
     }
 
     fn enum_type_param_mismatch(&mut self, old_enum: &Enum, new_enum: &Enum) {
-        self.enum_type_param_mismatch_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+        self.errors.push(UpgradeCompatibilityModeError::EnumTypeParamMismatch(old_enum.clone(), new_enum.clone()));
     }
 
     fn enum_new_variant(&mut self, old_enum: &Enum, new_enum: &Enum) {
-        self.enum_new_variant_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+        self.errors.push(UpgradeCompatibilityModeError::EnumNewVariant(old_enum.clone(), new_enum.clone()));
     }
 
-    fn enum_variant_mismatch(&mut self, old_enum: &Enum, new_enum: &Enum) {
-        self.enum_variant_mismatch_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+    fn enum_variant_missing(&mut self, old_enum: &Enum, variant_idx: usize) {
+        self.errors.push(UpgradeCompatibilityModeError::EnumVariantMissing(old_enum.clone(), variant_idx));
     }
 
-    fn enum_variant_missing(&mut self, old_enum: &Enum) {
-        self.enum_variant_missing_errors.push(format!("{}::{}", old_enum.module, old_enum.name));
+    fn enum_variant_mismatch(&mut self, old_enum: &Enum, new_enum: &Enum, variant_idx: usize) {
+        self.errors.push(UpgradeCompatibilityModeError::EnumVariantMismatch(old_enum.clone(), new_enum.clone(), variant_idx));
     }
 
-
-    fn function_missing(&mut self, old_func: &Function, check_private_entry_linking: bool) {
-        self.function_missing_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_missing_public(&mut self, old_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionMissingPublic(old_function.clone()));
     }
 
-    fn function_friend_missing(&mut self) {
-        self.function_friend_missing_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_missing_friend(&mut self, old_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionMissingFriend(old_function.clone()));
     }
 
-    fn function_friend_linking(&mut self, old_func: &Function) {
-        self.function_friend_linking_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_missing_entry(&mut self, old_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionMissingEntry(old_function.clone()));
     }
 
-    fn function_previously_friend(&mut self, old_func: &Function) {
-        self.function_previously_friend_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_signature_mismatch(&mut self, old_function: &Function, new_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionSignatureMismatch(old_function.clone(), new_function.clone()));
     }
 
-    fn function_visibility_mismatch(&mut self, old_func: &Function, new_func: &Function) {
-        self.function_visibility_mismatch_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_lost_public_visibility(&mut self, old_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionLostPublicVisibility(old_function.clone()));
     }
 
-    fn function_entry_compatibility(&mut self, old_func: &Function, new_func: &Function) {
-        self.function_entry_compatibility_errors.push(format!("{}::{}", old_func.module, old_func.name));
+    fn function_lost_friend_visibility(&mut self, old_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionLostFriendVisibility(old_function.clone()));
+    }
+
+    fn function_entry_compatibility(&mut self, old_function: &Function, new_function: &Function) {
+        self.errors.push(UpgradeCompatibilityModeError::FunctionEntryCompatibility(old_function.clone(), new_function.clone()));
+    }
+
+    fn friend_module_missing(&mut self, old_modules: BTreeSet<ModuleId>, new_modules: BTreeSet<ModuleId>) {
+        self.errors.push(UpgradeCompatibilityModeError::FriendModuleMissing(old_modules.clone(), new_modules.clone()));
     }
 
     fn finish(&self, _: &Compatibility) -> Result<(), Self::Error> {
-        let mut errors = vec![];
-        if !self.structs_missing_errors.is_empty() {
-            errors.push(format!("Structs missing: {:?}", self.structs_missing_errors));
+        if !self.errors.is_empty() {
+            let errors: Vec<String> = self.errors.iter().map(|e| format!("- {}", e)).collect();
+            return Err(anyhow!("Upgrade compatibility check failed with the following errors:\n{}", errors.join("\n")));
         }
-        if !self.struct_ability_mismatch_errors.is_empty() {
-            errors.push(format!("Structs ability mismatch: {:?}", self.struct_ability_mismatch_errors));
-        }
-        if !self.struct_type_param_mismatch_errors.is_empty() {
-            errors.push(format!("Structs type param mismatch: {:?}", self.struct_type_param_mismatch_errors));
-        }
-        if !self.struct_field_mismatch_errors.is_empty() {
-            errors.push(format!("Structs field mismatch: {:?}", self.struct_field_mismatch_errors));
-        }
-        if !self.enum_missing_errors.is_empty() {
-            errors.push(format!("Enums missing: {:?}", self.enum_missing_errors));
-        }
-        if !self.enum_ability_mismatch_errors.is_empty() {
-            errors.push(format!("Enums ability mismatch: {:?}", self.enum_ability_mismatch_errors));
-        }
-        if !self.enum_type_param_mismatch_errors.is_empty() {
-            errors.push(format!("Enums type param mismatch: {:?}", self.enum_type_param_mismatch_errors));
-        }
-        if !self.enum_new_variant_errors.is_empty() {
-            errors.push(format!("Enums new variant: {:?}", self.enum_new_variant_errors));
-        }
-        if !self.enum_variant_mismatch_errors.is_empty() {
-            errors.push(format!("Enums variant mismatch: {:?}", self.enum_variant_mismatch_errors));
-        }
-        if !self.enum_variant_missing_errors.is_empty() {
-            errors.push(format!("Enums variant missing: {:?}", self.enum_variant_missing_errors));
-        }
-        if !self.function_missing_errors.is_empty() {
-            errors.push(format!("Functions missing: {:?}", self.function_missing_errors));
-        }
-        if !self.function_friend_missing_errors.is_empty() {
-            errors.push(format!("Functions friend missing: {:?}", self.function_friend_missing_errors));
-        }
-        if !self.function_friend_linking_errors.is_empty() {
-            errors.push(format!("Functions friend linking: {:?}", self.function_friend_linking_errors));
-        }
-        if !self.function_previously_friend_errors.is_empty() {
-            errors.push(format!("Functions previously friend: {:?}", self.function_previously_friend_errors));
-        }
-        if !self.function_visibility_mismatch_errors.is_empty() {
-            errors.push(format!("Functions visibility mismatch: {:?}", self.function_visibility_mismatch_errors));
-        }
-        if !self.function_entry_compatibility_errors.is_empty() {
-            errors.push(format!("Functions entry compatibility: {:?}", self.function_entry_compatibility_errors));
-        }
-        if !self.function_entry_compatibility_errors.is_empty() {
-            errors.push(format!("Functions entry compatibility: {:?}", self.function_entry_compatibility_errors));
-        }
-
-        if errors.len() {
-            return Err(anyhow::anyhow!(errors.join("\n")));
-        }
-
         Ok(())
-
     }
 }

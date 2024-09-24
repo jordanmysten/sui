@@ -18,4 +18,4 @@ pub mod sui_commands;
 pub mod validator_commands;
 mod verifier_meter;
 pub mod zklogin_commands_util;
-// pub mod upgrade_compatibility;
+pub mod upgrade_compatibility;

@@ -7,6 +7,7 @@ use crate::{
     displays::Pretty,
     key_identity::{get_identity_address, KeyIdentity},
     verifier_meter::{AccumulatingMeter, Accumulator},
+    upgrade_compatibility::CliCompatibilityMode,
 };
 use std::{
     collections::{btree_map::Entry, BTreeMap},
@@ -41,7 +42,7 @@ use sui_source_validation::{BytecodeSourceVerifier, ValidationMode};
 
 use shared_crypto::intent::Intent;
 use sui_json::SuiJsonValue;
-use sui_json_rpc_types::{Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData, SuiExecutionStatus, SuiMoveNormalizedModule, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse, SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData, SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions};
+use sui_json_rpc_types::{Coin, DryRunTransactionBlockResponse, DynamicFieldPage, SuiCoinMetadata, SuiData, SuiExecutionStatus, SuiObjectData, SuiObjectDataOptions, SuiObjectResponse, SuiObjectResponseQuery, SuiParsedData, SuiProtocolConfigValue, SuiRawData, SuiTransactionBlockEffects, SuiTransactionBlockEffectsAPI, SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions};
 use sui_keys::keystore::AccountKeystore;
 use sui_move_build::{
     build_from_resolution_graph, check_invalid_dependencies, check_unpublished_dependencies,
@@ -76,7 +77,6 @@ use sui_types::{
 };
 
 use json_to_table::json_to_table;
-use move_binary_format::compatibility::ExecutionCompatibilityMode;
 use move_binary_format::file_format::AbilitySet;
 use tabled::{
     builder::Builder as TableBuilder,
@@ -91,7 +91,6 @@ use tabled::{
 
 use tracing::{debug, info};
 use sui_types::execution_config_utils::to_binary_config;
-use sui_types::move_package::{normalize_deserialized_modules, UpgradePolicy};
 
 #[path = "unit_tests/profiler_tests.rs"]
 #[cfg(test)]
@@ -934,7 +933,7 @@ impl SuiClientCommands {
 
                 let existing_package = match existing_obj {
                     SuiRawData::Package(pkg) => Ok(pkg),
-                    SuiRawData::MoveObject(move_obj) => {
+                    SuiRawData::MoveObject(_) => {
                         Err(anyhow!("Object found when package expected"))
                     }
                 }?;
@@ -952,8 +951,7 @@ impl SuiClientCommands {
                 let module1 = Module::new(new_modules.first().ok_or_else(|| anyhow!("No new modules found"))?);
                 let module2 = Module::new(existing_modules.first().ok_or_else(|| anyhow!("No existing modules found"))?);
 
-
-                // Based off sui-execution crate's usage
+                // Based off sui-execution crate's flags
                 (Compatibility {
                     check_datatype_and_pub_function_linking: true,
                     check_datatype_layout: true,
@@ -961,12 +959,10 @@ impl SuiClientCommands {
                     check_private_entry_linking: false,
                     disallowed_new_abilities: AbilitySet::ALL,
                     disallow_change_datatype_type_params: true,
-                    // We disallow adding new variants to enums for now
                     disallow_new_variants: true,
                 })
                     // TODO use our new mode
-                    .check_::<ExecutionCompatibilityMode>(&module1, &module2)
-                    .map_err(|_| anyhow!("INCOMPATIBLE"))?;
+                    .check_with_mode::<CliCompatibilityMode>(&module1, &module2)?;
 
                 let tx_kind = client
                     .transaction_builder()
