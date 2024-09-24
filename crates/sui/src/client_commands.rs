@@ -944,7 +944,6 @@ impl SuiClientCommands {
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(|_| anyhow!("Unable to check compatibility of existing module"))?;
 
-
                 use move_binary_format::normalized::Module;
                 use move_binary_format::compatibility::Compatibility;
                 // check the first modules
