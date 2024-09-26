@@ -257,6 +257,14 @@ impl Chain {
             Chain::Unknown => "unknown",
         }
     }
+
+    pub fn from_chain_id(chain_id: String) -> Self {
+        match chain_id.as_str() {
+            "35834a8a" => Chain::Mainnet,
+            "4c78adac" => Chain::Testnet,
+            _ => Chain::Unknown,
+        }
+    }
 }
 
 pub struct Error(pub String);
