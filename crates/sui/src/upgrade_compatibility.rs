@@ -1,14 +1,14 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-use anyhow::{anyhow, Error};
-use std::collections::BTreeSet;
+use anyhow::{anyhow, Context, Error};
+use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
 
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
-    file_format::AbilitySet,
+    file_format::{AbilitySet, Visibility},
     normalized::{Enum, Function, Module, Struct},
     CompiledModule,
 };
@@ -33,17 +33,17 @@ pub async fn check_compatibility(
         .iter()
         .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| anyhow!("Unable to check compatibility of new module"))?;
+        .context("Unable to to deserialize compiled module")?;
 
     let existing_obj_read = client
         .read_api()
         .get_object_with_options(package_id, SuiObjectDataOptions::new().with_bcs())
         .await
-        .map_err(|_| anyhow!("Unable to get existing module"))?;
+        .context("Unable to get existing package")?;
 
     let existing_obj = existing_obj_read
         .into_object()
-        .map_err(|_| anyhow!("Unable to read object"))?
+        .context("Unable to get existing package")?
         .bcs
         .ok_or_else(|| anyhow!("Unable to read object"))?;
 
@@ -57,23 +57,22 @@ pub async fn check_compatibility(
         .iter()
         .map(|m| CompiledModule::deserialize_with_config(m.1, &to_binary_config(&protocol_config)))
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| anyhow!("Unable to check compatibility of existing module"))?;
+        .context("Unable to get existing package")?;
+
+    // create a map from the new modules
+    let new_modules_map: HashMap<Identifier, CompiledModule> = new_modules
+        .iter()
+        .map(|m| (m.self_id().name().to_owned(), m.clone()))
+        .collect();
 
     // for each existing find the new one run compatibility check
     for existing_module in existing_modules {
         let name = existing_module.self_id().name().to_owned();
+
         // find the new module with the same name
-        match new_modules.iter().find(|m| m.self_id().name().eq(&name)) {
+        match new_modules_map.get(&name) {
             Some(new_module) => {
-                (Compatibility {
-                    check_datatype_and_pub_function_linking: true,
-                    check_datatype_layout: true,
-                    check_friend_linking: false,
-                    check_private_entry_linking: false,
-                    disallowed_new_abilities: AbilitySet::ALL,
-                    disallow_change_datatype_type_params: true,
-                    disallow_new_variants: true,
-                })
+                Compatibility::upgrade_check()
                 .check_with_mode::<CliCompatibilityMode>(
                     &Module::new(&existing_module),
                     &Module::new(new_module),
@@ -191,11 +190,66 @@ enum UpgradeCompatibilityModeError {
     FriendModuleMissing(BTreeSet<ModuleId>, BTreeSet<ModuleId>),
 }
 
+impl UpgradeCompatibilityModeError {
+    fn breaks_compatibility(&self, compatability: &Compatibility) -> bool {
+        match self {
+            UpgradeCompatibilityModeError::StructAbilityMismatch { .. } |
+            UpgradeCompatibilityModeError::StructTypeParamMismatch { .. } |
+            UpgradeCompatibilityModeError::EnumAbilityMismatch { .. } |
+            UpgradeCompatibilityModeError::EnumTypeParamMismatch { .. } |
+            UpgradeCompatibilityModeError::FunctionMissingPublic { .. } |
+            UpgradeCompatibilityModeError::FunctionLostPublicVisibility { .. } => {
+                compatability.check_datatype_and_pub_function_linking
+            }
+
+            UpgradeCompatibilityModeError::StructFieldMismatch { .. }  |
+            UpgradeCompatibilityModeError::EnumVariantMissing { .. } |
+            UpgradeCompatibilityModeError::EnumVariantMismatch { .. } => {
+                compatability.check_datatype_layout
+            }
+
+            UpgradeCompatibilityModeError::StructMissing { .. } |
+            UpgradeCompatibilityModeError::EnumMissing { .. } => {
+                compatability.check_datatype_and_pub_function_linking || compatability.check_datatype_layout
+            }
+
+            UpgradeCompatibilityModeError::FunctionSignatureMismatch { old_function, ..  } => {
+                if old_function.visibility == Visibility::Public {
+                    return compatability.check_datatype_and_pub_function_linking
+                } else if old_function.visibility == Visibility::Friend {
+                    return compatability.check_friend_linking
+                }
+                if old_function.is_entry {
+                    compatability.check_private_entry_linking
+                } else {
+                    false
+                }
+            }
+
+            UpgradeCompatibilityModeError::FunctionMissingFriend { .. } |
+            UpgradeCompatibilityModeError::FunctionLostFriendVisibility { .. } |
+            UpgradeCompatibilityModeError::FriendModuleMissing(_,_) => {
+                compatability.check_friend_linking
+            }
+
+            UpgradeCompatibilityModeError::FunctionMissingEntry {..} |
+            UpgradeCompatibilityModeError::FunctionEntryCompatibility { .. } => {
+                compatability.check_private_entry_linking
+
+            }
+            UpgradeCompatibilityModeError::EnumNewVariant { .. } => {
+                compatability.disallow_new_variants
+            }
+        }
+    }
+}
+
 /// A compatibility mode that collects errors as a vector of enums which describe the error causes
 #[derive(Default)]
 pub struct CliCompatibilityMode {
     errors: Vec<UpgradeCompatibilityModeError>,
 }
+
 
 impl CompatibilityMode for CliCompatibilityMode {
     type Error = anyhow::Error;
@@ -401,9 +455,14 @@ impl CompatibilityMode for CliCompatibilityMode {
             ));
     }
 
-    fn finish(&self, _: &Compatibility) -> Result<(), Self::Error> {
-        if !self.errors.is_empty() {
-            let errors: Vec<String> = self.errors.iter().map(|e| format!("- {}", e)).collect();
+    fn finish(&self, compatability: &Compatibility) -> Result<(), Self::Error> {
+        let errors: Vec<String> = self.errors
+            .iter()
+            .filter(|e| e.breaks_compatibility(compatability))
+            .map(|e| format!("- {}", e))
+            .collect();
+
+        if !errors.is_empty() {
             return Err(anyhow!(
                 "Upgrade compatibility check failed with the following errors:\n{}",
                 errors.join("\n")
