@@ -94,6 +94,7 @@ use tabled::{
     },
 };
 
+use sui_types::digests::ChainIdentifier;
 use tracing::{debug, info};
 
 #[path = "unit_tests/profiler_tests.rs"]
@@ -867,8 +868,16 @@ impl SuiClientCommands {
                 let sender = sender.unwrap_or(context.active_address()?);
                 let client = context.get_client().await?;
                 let chain_id = client.read_api().get_chain_identifier().await.ok();
-                let protocol_config =
-                    ProtocolConfig::get_for_version(ProtocolVersion::MAX, Chain::Unknown);
+                let protocol_config = ProtocolConfig::get_for_version(
+                    ProtocolVersion::MAX,
+                    match chain_id
+                        .as_ref()
+                        .and_then(ChainIdentifier::from_chain_short_id)
+                    {
+                        Some(chain_id) => chain_id.chain(),
+                        None => Chain::Unknown,
+                    },
+                );
 
                 let package_path =
                     package_path

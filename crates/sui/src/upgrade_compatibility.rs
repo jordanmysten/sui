@@ -1,7 +1,6 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-
 #[path = "unit_tests/upgrade_compatibility_tests.rs"]
 #[cfg(test)]
 mod upgrade_compatibility_tests;
@@ -13,7 +12,7 @@ use thiserror::Error;
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
-    file_format::{Visibility},
+    file_format::Visibility,
     normalized::{Enum, Function, Module, Struct},
     CompiledModule,
 };
@@ -67,7 +66,10 @@ pub async fn check_compatibility(
     compare_packages(existing_modules, new_modules)
 }
 
-fn compare_packages(existing_modules: Vec<CompiledModule>, new_modules: Vec<CompiledModule>) -> Result<(), Error> {
+fn compare_packages(
+    existing_modules: Vec<CompiledModule>,
+    new_modules: Vec<CompiledModule>,
+) -> Result<(), Error> {
     // create a map from the new modules
     let new_modules_map: HashMap<Identifier, CompiledModule> = new_modules
         .iter()
@@ -81,8 +83,7 @@ fn compare_packages(existing_modules: Vec<CompiledModule>, new_modules: Vec<Comp
         // find the new module with the same name
         match new_modules_map.get(&name) {
             Some(new_module) => {
-                Compatibility::upgrade_check()
-                .check_with_mode::<CliCompatibilityMode>(
+                Compatibility::upgrade_check().check_with_mode::<CliCompatibilityMode>(
                     &Module::new(&existing_module),
                     &Module::new(new_module),
                 )?;
@@ -202,31 +203,32 @@ enum UpgradeCompatibilityModeError {
 impl UpgradeCompatibilityModeError {
     fn breaks_compatibility(&self, compatability: &Compatibility) -> bool {
         match self {
-            UpgradeCompatibilityModeError::StructAbilityMismatch { .. } |
-            UpgradeCompatibilityModeError::StructTypeParamMismatch { .. } |
-            UpgradeCompatibilityModeError::EnumAbilityMismatch { .. } |
-            UpgradeCompatibilityModeError::EnumTypeParamMismatch { .. } |
-            UpgradeCompatibilityModeError::FunctionMissingPublic { .. } |
-            UpgradeCompatibilityModeError::FunctionLostPublicVisibility { .. } => {
+            UpgradeCompatibilityModeError::StructAbilityMismatch { .. }
+            | UpgradeCompatibilityModeError::StructTypeParamMismatch { .. }
+            | UpgradeCompatibilityModeError::EnumAbilityMismatch { .. }
+            | UpgradeCompatibilityModeError::EnumTypeParamMismatch { .. }
+            | UpgradeCompatibilityModeError::FunctionMissingPublic { .. }
+            | UpgradeCompatibilityModeError::FunctionLostPublicVisibility { .. } => {
                 compatability.check_datatype_and_pub_function_linking
             }
 
-            UpgradeCompatibilityModeError::StructFieldMismatch { .. }  |
-            UpgradeCompatibilityModeError::EnumVariantMissing { .. } |
-            UpgradeCompatibilityModeError::EnumVariantMismatch { .. } => {
+            UpgradeCompatibilityModeError::StructFieldMismatch { .. }
+            | UpgradeCompatibilityModeError::EnumVariantMissing { .. }
+            | UpgradeCompatibilityModeError::EnumVariantMismatch { .. } => {
                 compatability.check_datatype_layout
             }
 
-            UpgradeCompatibilityModeError::StructMissing { .. } |
-            UpgradeCompatibilityModeError::EnumMissing { .. } => {
-                compatability.check_datatype_and_pub_function_linking || compatability.check_datatype_layout
+            UpgradeCompatibilityModeError::StructMissing { .. }
+            | UpgradeCompatibilityModeError::EnumMissing { .. } => {
+                compatability.check_datatype_and_pub_function_linking
+                    || compatability.check_datatype_layout
             }
 
-            UpgradeCompatibilityModeError::FunctionSignatureMismatch { old_function, ..  } => {
+            UpgradeCompatibilityModeError::FunctionSignatureMismatch { old_function, .. } => {
                 if old_function.visibility == Visibility::Public {
-                    return compatability.check_datatype_and_pub_function_linking
+                    return compatability.check_datatype_and_pub_function_linking;
                 } else if old_function.visibility == Visibility::Friend {
-                    return compatability.check_friend_linking
+                    return compatability.check_friend_linking;
                 }
                 if old_function.is_entry {
                     compatability.check_private_entry_linking
@@ -235,16 +237,15 @@ impl UpgradeCompatibilityModeError {
                 }
             }
 
-            UpgradeCompatibilityModeError::FunctionMissingFriend { .. } |
-            UpgradeCompatibilityModeError::FunctionLostFriendVisibility { .. } |
-            UpgradeCompatibilityModeError::FriendModuleMissing(_, _) => {
+            UpgradeCompatibilityModeError::FunctionMissingFriend { .. }
+            | UpgradeCompatibilityModeError::FunctionLostFriendVisibility { .. }
+            | UpgradeCompatibilityModeError::FriendModuleMissing(_, _) => {
                 compatability.check_friend_linking
             }
 
-            UpgradeCompatibilityModeError::FunctionMissingEntry {..} |
-            UpgradeCompatibilityModeError::FunctionEntryCompatibility { .. } => {
+            UpgradeCompatibilityModeError::FunctionMissingEntry { .. }
+            | UpgradeCompatibilityModeError::FunctionEntryCompatibility { .. } => {
                 compatability.check_private_entry_linking
-
             }
             UpgradeCompatibilityModeError::EnumNewVariant { .. } => {
                 compatability.disallow_new_variants
@@ -258,7 +259,6 @@ impl UpgradeCompatibilityModeError {
 pub struct CliCompatibilityMode {
     errors: Vec<UpgradeCompatibilityModeError>,
 }
-
 
 impl CompatibilityMode for CliCompatibilityMode {
     type Error = anyhow::Error;
@@ -465,7 +465,8 @@ impl CompatibilityMode for CliCompatibilityMode {
     }
 
     fn finish(&self, compatability: &Compatibility) -> Result<(), Self::Error> {
-        let errors: Vec<String> = self.errors
+        let errors: Vec<String> = self
+            .errors
             .iter()
             .filter(|e| e.breaks_compatibility(compatability))
             .map(|e| format!("- {}", e))
