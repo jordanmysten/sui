@@ -1,6 +1,11 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
+
+#[path = "unit_tests/upgrade_compatibility_tests.rs"]
+#[cfg(test)]
+mod upgrade_compatibility_tests;
+
 use anyhow::{anyhow, Context, Error};
 use std::collections::{BTreeSet, HashMap};
 use thiserror::Error;
@@ -8,7 +13,7 @@ use thiserror::Error;
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
-    file_format::{AbilitySet, Visibility},
+    file_format::{Visibility},
     normalized::{Enum, Function, Module, Struct},
     CompiledModule,
 };
@@ -59,6 +64,10 @@ pub async fn check_compatibility(
         .collect::<Result<Vec<_>, _>>()
         .context("Unable to get existing package")?;
 
+    compare_packages(existing_modules, new_modules)
+}
+
+fn compare_packages(existing_modules: Vec<CompiledModule>, new_modules: Vec<CompiledModule>) -> Result<(), Error> {
     // create a map from the new modules
     let new_modules_map: HashMap<Identifier, CompiledModule> = new_modules
         .iter()
@@ -228,7 +237,7 @@ impl UpgradeCompatibilityModeError {
 
             UpgradeCompatibilityModeError::FunctionMissingFriend { .. } |
             UpgradeCompatibilityModeError::FunctionLostFriendVisibility { .. } |
-            UpgradeCompatibilityModeError::FriendModuleMissing(_,_) => {
+            UpgradeCompatibilityModeError::FriendModuleMissing(_, _) => {
                 compatability.check_friend_linking
             }
 
