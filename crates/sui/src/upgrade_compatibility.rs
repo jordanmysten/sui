@@ -26,81 +26,10 @@ use sui_protocol_config::ProtocolConfig;
 use sui_sdk::SuiClient;
 use sui_types::{base_types::ObjectID, execution_config_utils::to_binary_config};
 
-/// Check the upgrade compatibility of a new package with an existing on-chain package.
-pub async fn check_compatibility(
-    client: &SuiClient,
-    package_id: ObjectID,
-    compiled_modules: &[Vec<u8>],
-    protocol_config: ProtocolConfig,
-) -> Result<(), Error> {
-    let new_modules = compiled_modules
-        .iter()
-        .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
-        .collect::<Result<Vec<_>, _>>()
-        .context("Unable to to deserialize compiled module")?;
-
-    let existing_obj_read = client
-        .read_api()
-        .get_object_with_options(package_id, SuiObjectDataOptions::new().with_bcs())
-        .await
-        .context("Unable to get existing package")?;
-
-    let existing_obj = existing_obj_read
-        .into_object()
-        .context("Unable to get existing package")?
-        .bcs
-        .ok_or_else(|| anyhow!("Unable to read object"))?;
-
-    let existing_package = match existing_obj {
-        SuiRawData::Package(pkg) => Ok(pkg),
-        SuiRawData::MoveObject(_) => Err(anyhow!("Object found when package expected")),
-    }?;
-
-    let existing_modules = existing_package
-        .module_map
-        .iter()
-        .map(|m| CompiledModule::deserialize_with_config(m.1, &to_binary_config(&protocol_config)))
-        .collect::<Result<Vec<_>, _>>()
-        .context("Unable to get existing package")?;
-
-    compare_packages(existing_modules, new_modules)
-}
-
-fn compare_packages(
-    existing_modules: Vec<CompiledModule>,
-    new_modules: Vec<CompiledModule>,
-) -> Result<(), Error> {
-    // create a map from the new modules
-    let new_modules_map: HashMap<Identifier, CompiledModule> = new_modules
-        .iter()
-        .map(|m| (m.self_id().name().to_owned(), m.clone()))
-        .collect();
-
-    // for each existing find the new one run compatibility check
-    for existing_module in existing_modules {
-        let name = existing_module.self_id().name().to_owned();
-
-        // find the new module with the same name
-        match new_modules_map.get(&name) {
-            Some(new_module) => {
-                Compatibility::upgrade_check().check_with_mode::<CliCompatibilityMode>(
-                    &Module::new(&existing_module),
-                    &Module::new(new_module),
-                )?;
-            }
-            None => {
-                Err(anyhow!("Module {} is missing from the package", name))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
 /// Errors that can occur during upgrade compatibility checks.
 /// one-to-one related to the underlying trait functions see: [`CompatibilityMode`]
 #[derive(Debug, Error)]
-enum UpgradeCompatibilityModeError {
+pub(crate) enum UpgradeCompatibilityModeError {
     #[error("Struct missing: {}", name.as_str())]
     StructMissing {
         name: Identifier,
@@ -256,7 +185,7 @@ impl UpgradeCompatibilityModeError {
 
 /// A compatibility mode that collects errors as a vector of enums which describe the error causes
 #[derive(Default)]
-pub struct CliCompatibilityMode {
+pub(crate) struct CliCompatibilityMode {
     errors: Vec<UpgradeCompatibilityModeError>,
 }
 
@@ -480,4 +409,75 @@ impl CompatibilityMode for CliCompatibilityMode {
         }
         Ok(())
     }
+}
+
+/// Check the upgrade compatibility of a new package with an existing on-chain package.
+pub(crate) async fn check_compatibility(
+    client: &SuiClient,
+    package_id: ObjectID,
+    compiled_modules: &[Vec<u8>],
+    protocol_config: ProtocolConfig,
+) -> Result<(), Error> {
+    let new_modules = compiled_modules
+        .iter()
+        .map(|b| CompiledModule::deserialize_with_config(b, &to_binary_config(&protocol_config)))
+        .collect::<Result<Vec<_>, _>>()
+        .context("Unable to to deserialize compiled module")?;
+
+    let existing_obj_read = client
+        .read_api()
+        .get_object_with_options(package_id, SuiObjectDataOptions::new().with_bcs())
+        .await
+        .context("Unable to get existing package")?;
+
+    let existing_obj = existing_obj_read
+        .into_object()
+        .context("Unable to get existing package")?
+        .bcs
+        .ok_or_else(|| anyhow!("Unable to read object"))?;
+
+    let existing_package = match existing_obj {
+        SuiRawData::Package(pkg) => Ok(pkg),
+        SuiRawData::MoveObject(_) => Err(anyhow!("Object found when package expected")),
+    }?;
+
+    let existing_modules = existing_package
+        .module_map
+        .iter()
+        .map(|m| CompiledModule::deserialize_with_config(m.1, &to_binary_config(&protocol_config)))
+        .collect::<Result<Vec<_>, _>>()
+        .context("Unable to get existing package")?;
+
+    compare_packages(existing_modules, new_modules)
+}
+
+fn compare_packages(
+    existing_modules: Vec<CompiledModule>,
+    new_modules: Vec<CompiledModule>,
+) -> Result<(), Error> {
+    // create a map from the new modules
+    let new_modules_map: HashMap<Identifier, CompiledModule> = new_modules
+        .iter()
+        .map(|m| (m.self_id().name().to_owned(), m.clone()))
+        .collect();
+
+    // for each existing find the new one run compatibility check
+    for existing_module in existing_modules {
+        let name = existing_module.self_id().name().to_owned();
+
+        // find the new module with the same name
+        match new_modules_map.get(&name) {
+            Some(new_module) => {
+                Compatibility::upgrade_check().check_with_mode::<CliCompatibilityMode>(
+                    &Module::new(&existing_module),
+                    &Module::new(new_module),
+                )?;
+            }
+            None => {
+                Err(anyhow!("Module {} is missing from the package", name))?;
+            }
+        }
+    }
+
+    Ok(())
 }
