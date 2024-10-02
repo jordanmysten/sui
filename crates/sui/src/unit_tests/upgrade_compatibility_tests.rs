@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::upgrade_compatibility::compare_packages;
+use insta::assert_debug_snapshot;
 use move_binary_format::CompiledModule;
 use std::path::PathBuf;
 use sui_move_build::BuildConfig;
@@ -14,70 +15,7 @@ fn test_all_fail() {
     assert!(result.is_err());
     let err = result.unwrap_err();
 
-    assert_eq!(
-        err.to_string(),
-        r#"Upgrade compatibility check failed with the following errors:
-- Struct ability mismatch: StructAbilityMismatchAdd
-  Old: []
-  New: [Copy, ]
-- Struct ability mismatch: StructAbilityMismatchChange
-  Old: [Copy, ]
-  New: [Drop, ]
-- Struct ability mismatch: StructAbilityMismatchRemove
-  Old: [Copy, ]
-  New: []
-- Struct field mismatch: StructFieldMismatchAdd
-  Old: [Field { name: Identifier("a"), type_: U64 }, Field { name: Identifier("b"), type_: U64 }]
-  New: [Field { name: Identifier("a"), type_: U64 }, Field { name: Identifier("b"), type_: U64 }, Field { name: Identifier("c"), type_: U64 }]
-- Struct field mismatch: StructFieldMismatchChange
-  Old: [Field { name: Identifier("a"), type_: U64 }, Field { name: Identifier("b"), type_: U64 }]
-  New: [Field { name: Identifier("a"), type_: U64 }, Field { name: Identifier("b"), type_: U8 }]
-- Struct field mismatch: StructFieldMismatchRemove
-  Old: [Field { name: Identifier("a"), type_: U64 }, Field { name: Identifier("b"), type_: U64 }]
-  New: [Field { name: Identifier("a"), type_: U64 }]
-- Struct missing: StructToBeRemoved
-- Struct type param mismatch: StructTypeParamMismatch
-  Old: [DatatypeTyParameter { constraints: [], is_phantom: false }, DatatypeTyParameter { constraints: [], is_phantom: false }]
-  New: [DatatypeTyParameter { constraints: [], is_phantom: false }]
-- Enum ability mismatch: EnumAbilityMismatchAdd
-  Old: []
-  New: [Copy, ]
-- Enum ability mismatch: EnumAbilityMismatchChange
-  Old: [Copy, ]
-  New: [Drop, ]
-- Enum ability mismatch: EnumAbilityMismatchRemove
-  Old: [Copy, ]
-  New: []
-- Enum new variant: EnumNewVariant
-  Old: [Variant { name: Identifier("A"), fields: [] }, Variant { name: Identifier("B"), fields: [] }, Variant { name: Identifier("C"), fields: [] }]
-  New: [Variant { name: Identifier("A"), fields: [] }, Variant { name: Identifier("B"), fields: [] }, Variant { name: Identifier("C"), fields: [] }, Variant { name: Identifier("D"), fields: [] }]
-- Enum missing: EnumToBeRemoved
-  Enum { abilities: [], type_parameters: [], variants: [Variant { name: Identifier("A"), fields: [] }, Variant { name: Identifier("B"), fields: [] }] }
-- Enum variant missing: EnumVariantMissing
-  Variant { name: Identifier("B"), fields: [] }
-- Function signature mismatch: function_add_arg
-  Old:
-    Params: []
-    Return: []
-  New:
-    Params: [U64]
-    Return: []
-- Function signature mismatch: function_change_arg
-  Old:
-    Params: [U64]
-    Return: []
-  New:
-    Params: [U8]
-    Return: []
-- Function signature mismatch: function_remove_arg
-  Old:
-    Params: [U64]
-    Return: []
-  New:
-    Params: []
-    Return: []
-- Function lost public visibility: function_to_have_public_removed"#
-    )
+    assert_debug_snapshot!(err);
 }
 
 #[test]
