@@ -923,6 +923,8 @@ impl SuiClientCommands {
                 let (package_id, compiled_modules, dependencies, package_digest, upgrade_policy) =
                     upgrade_result?;
 
+                // TODO remove once compatibility check is fully finished
+                #[cfg(feature = "compatibility-check-errors")]
                 check_compatibility(&client, package_id, &compiled_modules, protocol_config)
                     .await?;
 

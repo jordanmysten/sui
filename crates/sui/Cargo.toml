@@ -133,3 +133,6 @@ gas-profiler = [
     "sui-types/gas-profiler",
     "sui-execution/gas-profiler",
 ]
+# TODO remove once compatibility check is fully finished
+# not meant for long term use
+compatibility-check-errors = []
