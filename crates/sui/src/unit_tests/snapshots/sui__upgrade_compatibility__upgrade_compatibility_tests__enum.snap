@@ -1,0 +1,145 @@
+---
+source: crates/sui/src/unit_tests/upgrade_compatibility_tests.rs
+expression: err.to_string()
+---
+error: Enum ability mismatch
+  ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:9:17
+  │
+9 │     public enum EnumAddAbility has copy, drop { // add drop
+  │                 ^^^^^^^^^^^^^^ Enum 'EnumAddAbility' has unexpected abilities [Drop, ]
+  │
+  = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum 'EnumAddAbility'.
+
+error: Enum variant mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:10:9
+   │
+ 9 │     public enum EnumAddAbility has copy, drop { // add drop
+   │                 --------------
+10 │         A,
+   │         ^ Enum 'EnumAddAbility' has different variant name 'A' at position 0, expected 'FirstVariant'.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumAddAbility'.
+
+error: Enum ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:13:17
+   │
+13 │     public enum EnumRemoveAbility has copy { // drop removed
+   │                 ^^^^^^^^^^^^^^^^^ Enum 'EnumRemoveAbility' has missing abilities [Drop, ]
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum 'EnumRemoveAbility'.
+
+error: Enum new variant
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:19:9
+   │
+17 │     public enum EnumAddVariant {
+   │                 --------------
+18 │         A,
+19 │         B, // added
+   │         ^ Enum 'EnumAddVariant' has a new unexpected variant 'B' at position 1.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumAddVariant'.
+
+error: Enum variant missing
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:22:17
+   │
+22 │     public enum EnumRemoveVariant {
+   │                 ^^^^^^^^^^^^^^^^^
+   │                 │
+   │                 Enum 'EnumRemoveVariant' has a missing variant at position 1.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumRemoveVariant'.
+
+error: Enum variant mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:29:9
+   │
+27 │     public enum EnumChangeVariant {
+   │                 -----------------
+28 │         A,
+29 │         C, // changed from B
+   │         ^ Enum 'EnumChangeVariant' has different variant name 'C' at position 1, expected 'B'.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumChangeVariant'.
+
+error: Enum ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:45:17
+   │
+45 │     public enum EnumAddAbilityWithTypes has copy, drop { // drop added
+   │                 ^^^^^^^^^^^^^^^^^^^^^^^ Enum 'EnumAddAbilityWithTypes' has unexpected abilities [Drop, ]
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum 'EnumAddAbilityWithTypes'.
+
+error: Enum ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:49:17
+   │
+49 │     public enum EnumRemoveAbilityWithTypes has copy { // drop removed
+   │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ Enum 'EnumRemoveAbilityWithTypes' has missing abilities [Drop, ]
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum 'EnumRemoveAbilityWithTypes'.
+
+error: Enum new variant
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:55:9
+   │
+53 │     public enum EnumAddVariantWithTypes {
+   │                 -----------------------
+54 │         A { a: u8 },
+55 │         B { b: u8 }, // added
+   │         ^^^^^^^^^^^ Enum 'EnumAddVariantWithTypes' has a new unexpected variant 'B' at position 1.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumAddVariantWithTypes'.
+
+error: Enum variant missing
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:58:17
+   │
+58 │     public enum EnumRemoveVariantWithTypes {
+   │                 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   │                 │
+   │                 Enum 'EnumRemoveVariantWithTypes' has a missing variant at position 1.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumRemoveVariantWithTypes'.
+
+error: Enum variant mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:65:9
+   │
+63 │     public enum EnumChangeVariantWithTypes {
+   │                 --------------------------
+64 │         A { a: u8 },
+65 │         C { b: u8 }, // changed to C
+   │         ^^^^^^^^^^^ Enum 'EnumChangeVariantWithTypes' has different variant name 'C' at position 1, expected 'B'.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumChangeVariantWithTypes'.
+
+error: Enum new variant
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:70:9
+   │
+68 │     public enum EnumChangeAndAddVariantWithTypes {
+   │                 --------------------------------
+69 │         A { a: u8 },
+70 │         C { b: u8 }, // to be changed to C
+   │         ^^^^^^^^^^^ Enum 'EnumChangeAndAddVariantWithTypes' has a new unexpected variant 'C' at position 1.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumChangeAndAddVariantWithTypes'.
+
+error: Enum new variant
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:71:9
+   │
+68 │     public enum EnumChangeAndAddVariantWithTypes {
+   │                 --------------------------------
+   ·
+71 │         D { d: u8 }, // added
+   │         ^^^^^^^^^^^ Enum 'EnumChangeAndAddVariantWithTypes' has a new unexpected variant 'D' at position 2.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumChangeAndAddVariantWithTypes'.
+
+error: Enum variant mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/enum_mismatch_v2/sources/UpgradeErrors.move:70:9
+   │
+68 │     public enum EnumChangeAndAddVariantWithTypes {
+   │                 --------------------------------
+69 │         A { a: u8 },
+70 │         C { b: u8 }, // to be changed to C
+   │         ^^^^^^^^^^^ Enum 'EnumChangeAndAddVariantWithTypes' has different variant name 'C' at position 1, expected 'B'.
+   │
+   = Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum 'EnumChangeAndAddVariantWithTypes'.
+
+
+Upgrade failed, this package requires changes to be compatible with the existing package. It's upgrade policy is set to 'Compatible'.
