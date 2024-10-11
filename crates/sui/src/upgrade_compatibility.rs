@@ -6,7 +6,7 @@
 mod upgrade_compatibility_tests;
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{stdout, IsTerminal};
 
@@ -15,6 +15,7 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 
+use move_binary_format::file_format::{FunctionDefinitionIndex, TableIndex};
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
@@ -112,125 +113,6 @@ pub(crate) enum UpgradeCompatibilityModeError {
         old_function: Function,
         new_function: Function,
     },
-}
-
-/// A list of errors that can occur during upgrade compatibility checks.
-#[derive(Debug, Clone, Default)]
-pub struct UpgradeErrorList {
-    errors: Vec<UpgradeCompatibilityModeError>,
-    source: Option<String>,
-}
-
-impl UpgradeErrorList {
-    fn push(&mut self, err: UpgradeCompatibilityModeError) {
-        self.errors.push(err);
-    }
-
-    /// Only keep the errors that break compatibility with the given [`Compatibility`]
-    fn retain_incompatible(&mut self, compatibility: &Compatibility) {
-        self.errors
-            .retain(|e| e.breaks_compatibility(compatibility));
-    }
-
-    /// Print the errors to the console with the relevant source code.
-    fn print_errors(
-        &mut self,
-        compiled_unit_with_source: &CompiledUnitWithSource,
-    ) -> Result<(), Error> {
-        for err in self.errors.clone() {
-            match err {
-                UpgradeCompatibilityModeError::StructMissing { name, .. } => {
-                    self.print_missing_definition(
-                        "Struct",
-                        name.to_string(),
-                        compiled_unit_with_source,
-                    )?;
-                }
-                UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
-                    self.print_missing_definition(
-                        "Enum",
-                        name.to_string(),
-                        compiled_unit_with_source,
-                    )?;
-                }
-                UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
-                    self.print_missing_definition(
-                        "Function",
-                        name.to_string(),
-                        compiled_unit_with_source,
-                    )?;
-                }
-                UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
-                    self.print_missing_definition(
-                        "Function",
-                        name.to_string(),
-                        compiled_unit_with_source,
-                    )?;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    /// retrieve the source, caches the source after the first read
-    fn source(
-        &mut self,
-        compiled_unit_with_source: &CompiledUnitWithSource,
-    ) -> Result<&String, Error> {
-        if self.source.is_none() {
-            let source_path = compiled_unit_with_source.source_path.clone();
-            let source_content = fs::read_to_string(&source_path)?;
-            self.source = Some(source_content);
-        }
-        Ok(self.source.as_ref().unwrap())
-    }
-
-    /// Print missing definition errors, e.g. struct, enum, function
-    fn print_missing_definition(
-        &mut self,
-        declaration_kind: &str,
-        identifier_name: String,
-        compiled_unit_with_source: &CompiledUnitWithSource,
-    ) -> Result<(), Error> {
-        let module_name = compiled_unit_with_source.unit.name;
-        let source_path = compiled_unit_with_source.source_path.to_string_lossy();
-        let source = self.source(compiled_unit_with_source)?;
-
-        let start = compiled_unit_with_source
-            .unit
-            .source_map
-            .definition_location
-            .start() as usize;
-
-        let end = compiled_unit_with_source
-            .unit
-            .source_map
-            .definition_location
-            .end() as usize;
-
-        let mut files = SimpleFiles::new();
-        let file_id = files.add(source_path, &source);
-
-        let diag = Diagnostic::error()
-            .with_message(format!("{} is missing", declaration_kind))
-            .with_labels(vec![Label::primary(file_id, start..end).with_message(
-                format!(
-                    "Module '{}' expected {} '{}', but found none",
-                    declaration_kind, module_name, identifier_name
-                ),
-            )])
-            .with_notes(vec![format!(
-                "The {} is missing in the new module, add the previously defined: '{}'",
-                declaration_kind, identifier_name
-            )]);
-
-        let mut writer = StandardStream::stderr(ColorChoice::Always);
-        let config = codespan_reporting::term::Config::default();
-
-        codespan_reporting::term::emit(&mut writer, &config, &files, &diag)
-            .context("Unable to print error")
-    }
 }
 
 impl UpgradeCompatibilityModeError {
@@ -472,6 +354,56 @@ impl CompatibilityMode for CliCompatibilityMode {
     }
 }
 
+#[allow(dead_code)]
+struct IdentifierTableLookup {
+    struct_identifier_to_index: BTreeMap<Identifier, TableIndex>,
+    enum_identifier_to_index: BTreeMap<Identifier, TableIndex>,
+    function_identifier_to_index: BTreeMap<Identifier, TableIndex>,
+}
+
+fn table_index(compiled_module: &CompiledModule) -> IdentifierTableLookup {
+    // for each in compiled module
+    let struct_identifier_to_index: BTreeMap<Identifier, TableIndex> = compiled_module
+        .struct_defs()
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            // get the identifier of the struct
+            let s_id = compiled_module
+                .identifier_at(compiled_module.datatype_handle_at(d.struct_handle).name);
+            (s_id.to_owned(), i as TableIndex)
+        })
+        .collect();
+
+    let enum_identifier_to_index: BTreeMap<Identifier, TableIndex> = compiled_module
+        .enum_defs()
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let e_id = compiled_module
+                .identifier_at(compiled_module.datatype_handle_at(d.enum_handle).name);
+            (e_id.to_owned(), i as TableIndex)
+        })
+        .collect();
+
+    let function_identifier_to_index: BTreeMap<Identifier, TableIndex> = compiled_module
+        .function_defs()
+        .iter()
+        .enumerate()
+        .map(|(i, d)| {
+            let f_id =
+                compiled_module.identifier_at(compiled_module.function_handle_at(d.function).name);
+            (f_id.to_owned(), i as TableIndex)
+        })
+        .collect();
+
+    IdentifierTableLookup {
+        struct_identifier_to_index,
+        enum_identifier_to_index,
+        function_identifier_to_index,
+    }
+}
+
 /// Check the upgrade compatibility of a new package with an existing on-chain package.
 pub(crate) async fn check_compatibility(
     client: &SuiClient,
@@ -517,6 +449,11 @@ fn compare_packages(
         .map(|m| (m.self_id().name().to_owned(), m.clone()))
         .collect();
 
+    let lookup: HashMap<Identifier, IdentifierTableLookup> = existing_modules
+        .iter()
+        .map(|m| (m.self_id().name().to_owned(), table_index(m)))
+        .collect();
+
     let errors: Vec<(Identifier, UpgradeCompatibilityModeError)> = existing_modules
         .iter()
         .flat_map(|existing_module| {
@@ -549,7 +486,7 @@ fn compare_packages(
     }
 
     let mut files = SimpleFiles::new();
-    let config = codespan_reporting::term::Config::default();
+    let config = term::Config::default();
     let mut writer;
     if stdout().is_terminal() {
         writer = term::termcolor::Buffer::ansi();
@@ -557,7 +494,6 @@ fn compare_packages(
         writer = term::termcolor::Buffer::no_color();
     }
     let mut file_id_map = HashMap::new();
-
 
     for (name, err) in errors {
         let compiled_unit_with_source = new_package
@@ -575,52 +511,53 @@ fn compare_packages(
             }
         };
 
-        term::emit(
-            &mut writer,
-            &config,
-            &files,
-            &diag_from_error(err, compiled_unit_with_source, file_id),
-        )?;
+        for diag in diag_from_error(&err, compiled_unit_with_source, file_id, &lookup[&name])
+            .iter()
+            .flatten()
+        {
+            term::emit(&mut writer, &config, &files, diag).context("Unable to emit error")?;
+        }
     }
 
     Err(anyhow!(
-        "Upgrade compatibility check failed:\n{}",
+        "{}\nUpgrade failed, this package requires changes to be compatible with the existing package. It's upgrade policy is set to 'Compatible'.",
         String::from_utf8(writer.into_inner()).context("Unable to convert buffer to string")?
     ))
 }
 
-
+/// Convert an error to a diagnostic using the specific error type's function.
 fn diag_from_error(
-    error: UpgradeCompatibilityModeError,
+    error: &UpgradeCompatibilityModeError,
     compiled_unit_with_source: &CompiledUnitWithSource,
     file_id: usize,
-) -> Diagnostic<usize> {
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
     match error {
-        UpgradeCompatibilityModeError::StructMissing { name, .. } => missing_definition_diag(
-            "struct",
-            name.to_string(),
-            compiled_unit_with_source,
-            file_id,
-        ),
+        UpgradeCompatibilityModeError::StructMissing { name, .. } => {
+            missing_definition_diag("struct", &name, compiled_unit_with_source, file_id)
+        }
         UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
-            missing_definition_diag("enum", name.to_string(), compiled_unit_with_source, file_id)
+            missing_definition_diag("enum", &name, compiled_unit_with_source, file_id)
         }
         UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
-            missing_definition_diag(
-                "public function",
-                name.to_string(),
-                compiled_unit_with_source,
-                file_id,
-            )
+            missing_definition_diag("public function", &name, compiled_unit_with_source, file_id)
         }
         UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
-            missing_definition_diag(
-                "entry function",
-                name.to_string(),
-                compiled_unit_with_source,
-                file_id,
-            )
+            missing_definition_diag("entry function", &name, compiled_unit_with_source, file_id)
         }
+
+        UpgradeCompatibilityModeError::FunctionSignatureMismatch {
+            name,
+            old_function,
+            new_function,
+        } => function_signature_mismatch_diag(
+            &name,
+            old_function,
+            new_function,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
         _ => todo!("Implement diag_from_error for {:?}", error),
     }
 }
@@ -631,7 +568,7 @@ fn missing_definition_diag(
     identifier_name: &Identifier,
     compiled_unit_with_source: &CompiledUnitWithSource,
     file_id: usize,
-) -> Diagnostic<usize> {
+) -> Result<Vec<Diagnostic<usize>>, Error> {
     let module_name = compiled_unit_with_source.unit.name;
 
     let start = compiled_unit_with_source
@@ -646,7 +583,7 @@ fn missing_definition_diag(
         .definition_location
         .end() as usize;
 
-    Diagnostic::error()
+    Ok(vec![Diagnostic::error()
         .with_message(format!("{declaration_kind} is missing"))
         .with_labels(vec![Label::primary(file_id, start..end).with_message(
             format!(
@@ -655,39 +592,146 @@ fn missing_definition_diag(
         )])
         .with_notes(vec![format!(
             "{declaration_kind}s are part of a module's public interface and cannot be removed or changed during an upgrade, add back the {declaration_kind} '{identifier_name}'."
-        )])
+        )])])
 }
-fn diag_from_error(
-    error: UpgradeCompatibilityModeError,
+
+/// Return a diagnostic for a function signature mismatch.
+/// start by checking the lengths of the parameters and returns and return a diagnostic if they are different
+/// if the lengths are the same check each parameter piece wise and return a diagnostic for each mismatch
+fn function_signature_mismatch_diag(
+    function_name: &Identifier,
+    old_function: &Function,
+    new_function: &Function,
     compiled_unit_with_source: &CompiledUnitWithSource,
     file_id: usize,
-) -> Diagnostic<usize> {
-    match error {
-        UpgradeCompatibilityModeError::StructMissing { name, .. } => missing_definition_diag(
-            "struct",
-            name.to_string(),
-            compiled_unit_with_source,
-            file_id,
-        ),
-        UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
-            missing_definition_diag("enum", name.to_string(), compiled_unit_with_source, file_id)
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let module_name = compiled_unit_with_source.unit.name;
+    let old_func_index = lookup
+        .function_identifier_to_index
+        .get(function_name)
+        .context("Unable to get function index")?;
+
+    let new_func_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_function_source_map(FunctionDefinitionIndex::new(*old_func_index))
+        .context("Unable to get function source map")?;
+
+    let identifier_start = new_func_sourcemap.definition_location.start() as usize;
+    let identifier_end = new_func_sourcemap.definition_location.end() as usize;
+
+    let mut diags = vec![];
+
+    // handle function arguments
+    if old_function.parameters.len() != new_function.parameters.len() {
+        diags.push(
+            Diagnostic::error()
+                .with_message("Function signature mismatch")
+                .with_labels(vec![Label::primary(
+                    file_id,
+                    identifier_start..identifier_end,
+                )
+                .with_message(format!(
+                    "Function '{function_name}' expected {} parameters, have {}",
+                    old_function.parameters.len(),
+                    new_function.parameters.len()
+                ))])
+                .with_notes(vec![format!(
+                    "Functions are part of a module's public interface and cannot be changed during an upgrade, restore the original function's parameters for function '{function_name}', expected {} parameters.",
+                    old_function.parameters.len()
+                )]),
+        );
+    } else if old_function.parameters != new_function.parameters {
+        for ((i, old_param), new_param) in old_function
+            .parameters
+            .iter()
+            .enumerate()
+            .zip(new_function.parameters.iter())
+        {
+            if old_param != new_param {
+                let start = new_func_sourcemap
+                    .parameters
+                    .get(i)
+                    .context("Unable to get parameter location")?
+                    .1
+                    .start() as usize;
+
+                let end = new_func_sourcemap
+                    .parameters
+                    .get(i)
+                    .context("Unable to get parameter location")?
+                    .1
+                    .end() as usize;
+
+                diags.push(
+                    Diagnostic::error()
+                        .with_message("Function signature mismatch")
+                        .with_labels(vec![Label::primary(file_id, start..end).with_message(
+                            format!("Function '{function_name}' unexpected parameter {new_param} at position {i}, expected {old_param}"),
+                        )])
+                        .with_notes(vec![format!(
+                            "Functions are part of a module's public interface and cannot be changed during an upgrade, restore the original function's parameters for function '{function_name}'."
+                        )]),
+                );
+            }
         }
-        UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
-            missing_definition_diag(
-                "public function",
-                name.to_string(),
-                compiled_unit_with_source,
-                file_id,
-            )
-        }
-        UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
-            missing_definition_diag(
-                "entry function",
-                name.to_string(),
-                compiled_unit_with_source,
-                file_id,
-            )
-        }
-        _ => todo!("Implement diag_from_error for {:?}", error),
     }
+
+    // handle return
+    if old_function.return_.len() != new_function.return_.len() {
+        diags.push(
+            Diagnostic::error()
+                .with_message("Function signature mismatch")
+                .with_labels(vec![Label::primary(
+                    file_id,
+                    identifier_start..identifier_end,
+                )
+                .with_message(format!(
+                    "Function '{function_name}' expected to have {} return type(s), have {}",
+                    old_function.return_.len(),
+                    new_function.return_.len()
+                ))])
+                .with_notes(vec![format!(
+                    "Functions are part of a module's public interface and cannot be changed during an upgrade, restore the original function's return types for function '{function_name}'."
+                )]),
+        );
+    } else if old_function.return_ != new_function.return_ {
+        for ((i, old_return), new_return) in old_function
+            .return_
+            .iter()
+            .enumerate()
+            .zip(new_function.return_.iter())
+        {
+            let returns = new_func_sourcemap
+                .returns
+                .get(i)
+                .context("Unable to get return location")?;
+            let start = returns.start() as usize;
+            let end = returns.end() as usize;
+
+            if old_return != new_return {
+                diags.push(
+                    Diagnostic::error()
+                        .with_message("Function signature mismatch")
+                        .with_labels(vec![Label::primary(
+                            file_id,
+                            start..end
+                        )
+                        .with_message(
+                            if new_function.return_.len() == 1 {
+                                format!("Module '{module_name}' function '{function_name}' has an unexpected return type {new_return}, expected {old_return}")
+                            } else {
+                                format!("Module '{module_name}' function '{function_name}' unexpected return type {new_return} at position {i}, expected {old_return}")
+                            },
+                        )])
+                        .with_notes(vec![format!(
+                            "Functions are part of a module's public interface and cannot be changed during an upgrade, restore the original function's return types for function '{function_name}'."
+                        )]),
+                );
+            }
+        }
+    }
+
+    Ok(diags)
 }
