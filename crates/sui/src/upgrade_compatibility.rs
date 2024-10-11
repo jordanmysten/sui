@@ -114,6 +114,125 @@ pub(crate) enum UpgradeCompatibilityModeError {
     },
 }
 
+/// A list of errors that can occur during upgrade compatibility checks.
+#[derive(Debug, Clone, Default)]
+pub struct UpgradeErrorList {
+    errors: Vec<UpgradeCompatibilityModeError>,
+    source: Option<String>,
+}
+
+impl UpgradeErrorList {
+    fn push(&mut self, err: UpgradeCompatibilityModeError) {
+        self.errors.push(err);
+    }
+
+    /// Only keep the errors that break compatibility with the given [`Compatibility`]
+    fn retain_incompatible(&mut self, compatibility: &Compatibility) {
+        self.errors
+            .retain(|e| e.breaks_compatibility(compatibility));
+    }
+
+    /// Print the errors to the console with the relevant source code.
+    fn print_errors(
+        &mut self,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+    ) -> Result<(), Error> {
+        for err in self.errors.clone() {
+            match err {
+                UpgradeCompatibilityModeError::StructMissing { name, .. } => {
+                    self.print_missing_definition(
+                        "Struct",
+                        name.to_string(),
+                        compiled_unit_with_source,
+                    )?;
+                }
+                UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
+                    self.print_missing_definition(
+                        "Enum",
+                        name.to_string(),
+                        compiled_unit_with_source,
+                    )?;
+                }
+                UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
+                    self.print_missing_definition(
+                        "Function",
+                        name.to_string(),
+                        compiled_unit_with_source,
+                    )?;
+                }
+                UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
+                    self.print_missing_definition(
+                        "Function",
+                        name.to_string(),
+                        compiled_unit_with_source,
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// retrieve the source, caches the source after the first read
+    fn source(
+        &mut self,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+    ) -> Result<&String, Error> {
+        if self.source.is_none() {
+            let source_path = compiled_unit_with_source.source_path.clone();
+            let source_content = fs::read_to_string(&source_path)?;
+            self.source = Some(source_content);
+        }
+        Ok(self.source.as_ref().unwrap())
+    }
+
+    /// Print missing definition errors, e.g. struct, enum, function
+    fn print_missing_definition(
+        &mut self,
+        declaration_kind: &str,
+        identifier_name: String,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+    ) -> Result<(), Error> {
+        let module_name = compiled_unit_with_source.unit.name;
+        let source_path = compiled_unit_with_source.source_path.to_string_lossy();
+        let source = self.source(compiled_unit_with_source)?;
+
+        let start = compiled_unit_with_source
+            .unit
+            .source_map
+            .definition_location
+            .start() as usize;
+
+        let end = compiled_unit_with_source
+            .unit
+            .source_map
+            .definition_location
+            .end() as usize;
+
+        let mut files = SimpleFiles::new();
+        let file_id = files.add(source_path, &source);
+
+        let diag = Diagnostic::error()
+            .with_message(format!("{} is missing", declaration_kind))
+            .with_labels(vec![Label::primary(file_id, start..end).with_message(
+                format!(
+                    "Module '{}' expected {} '{}', but found none",
+                    declaration_kind, module_name, identifier_name
+                ),
+            )])
+            .with_notes(vec![format!(
+                "The {} is missing in the new module, add the previously defined: '{}'",
+                declaration_kind, identifier_name
+            )]);
+
+        let mut writer = StandardStream::stderr(ColorChoice::Always);
+        let config = codespan_reporting::term::Config::default();
+
+        codespan_reporting::term::emit(&mut writer, &config, &files, &diag)
+            .context("Unable to print error")
+    }
+}
+
 impl UpgradeCompatibilityModeError {
     /// check if the error breaks compatibility for a given [`Compatibility`]
     fn breaks_compatibility(&self, compatability: &Compatibility) -> bool {
@@ -430,15 +549,15 @@ fn compare_packages(
     }
 
     let mut files = SimpleFiles::new();
-    let config = term::Config::default();
+    let config = codespan_reporting::term::Config::default();
     let mut writer;
-
     if stdout().is_terminal() {
         writer = term::termcolor::Buffer::ansi();
     } else {
         writer = term::termcolor::Buffer::no_color();
     }
     let mut file_id_map = HashMap::new();
+
 
     for (name, err) in errors {
         let compiled_unit_with_source = new_package
@@ -465,29 +584,42 @@ fn compare_packages(
     }
 
     Err(anyhow!(
-        "{}\nUpgrade failed, this package requires changes to be compatible with the existing package. It's upgrade policy is set to 'Compatible'.",
+        "Upgrade compatibility check failed:\n{}",
         String::from_utf8(writer.into_inner()).context("Unable to convert buffer to string")?
     ))
 }
 
-/// Convert an error to a diagnostic using the specific error type's function.
+
 fn diag_from_error(
     error: UpgradeCompatibilityModeError,
     compiled_unit_with_source: &CompiledUnitWithSource,
     file_id: usize,
 ) -> Diagnostic<usize> {
     match error {
-        UpgradeCompatibilityModeError::StructMissing { name, .. } => {
-            missing_definition_diag("struct", &name, compiled_unit_with_source, file_id)
-        }
+        UpgradeCompatibilityModeError::StructMissing { name, .. } => missing_definition_diag(
+            "struct",
+            name.to_string(),
+            compiled_unit_with_source,
+            file_id,
+        ),
         UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
-            missing_definition_diag("enum", &name, compiled_unit_with_source, file_id)
+            missing_definition_diag("enum", name.to_string(), compiled_unit_with_source, file_id)
         }
         UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
-            missing_definition_diag("public function", &name, compiled_unit_with_source, file_id)
+            missing_definition_diag(
+                "public function",
+                name.to_string(),
+                compiled_unit_with_source,
+                file_id,
+            )
         }
         UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
-            missing_definition_diag("entry function", &name, compiled_unit_with_source, file_id)
+            missing_definition_diag(
+                "entry function",
+                name.to_string(),
+                compiled_unit_with_source,
+                file_id,
+            )
         }
         _ => todo!("Implement diag_from_error for {:?}", error),
     }
@@ -524,4 +656,38 @@ fn missing_definition_diag(
         .with_notes(vec![format!(
             "{declaration_kind}s are part of a module's public interface and cannot be removed or changed during an upgrade, add back the {declaration_kind} '{identifier_name}'."
         )])
+}
+fn diag_from_error(
+    error: UpgradeCompatibilityModeError,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+) -> Diagnostic<usize> {
+    match error {
+        UpgradeCompatibilityModeError::StructMissing { name, .. } => missing_definition_diag(
+            "struct",
+            name.to_string(),
+            compiled_unit_with_source,
+            file_id,
+        ),
+        UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
+            missing_definition_diag("enum", name.to_string(), compiled_unit_with_source, file_id)
+        }
+        UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
+            missing_definition_diag(
+                "public function",
+                name.to_string(),
+                compiled_unit_with_source,
+                file_id,
+            )
+        }
+        UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
+            missing_definition_diag(
+                "entry function",
+                name.to_string(),
+                compiled_unit_with_source,
+                file_id,
+            )
+        }
+        _ => todo!("Implement diag_from_error for {:?}", error),
+    }
 }
