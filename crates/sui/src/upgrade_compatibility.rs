@@ -15,7 +15,7 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 
-use move_binary_format::file_format::{FunctionDefinitionIndex, TableIndex};
+use move_binary_format::file_format::{FunctionDefinitionIndex, StructDefinitionIndex, TableIndex};
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
@@ -346,7 +346,6 @@ impl CompatibilityMode for CliCompatibilityMode {
             .into_iter()
             .filter(|e| e.breaks_compatibility(compatability))
             .collect();
-
         if !errors.is_empty() {
             return Err(errors);
         }
@@ -536,6 +535,18 @@ fn diag_from_error(
         UpgradeCompatibilityModeError::StructMissing { name, .. } => {
             missing_definition_diag("struct", &name, compiled_unit_with_source, file_id)
         }
+        UpgradeCompatibilityModeError::StructFieldMismatch {
+            name,
+            old_struct,
+            new_struct,
+        } => struct_mismatch_diag(
+            &name,
+            old_struct,
+            new_struct,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
         UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
             missing_definition_diag("enum", &name, compiled_unit_with_source, file_id)
         }
@@ -545,7 +556,6 @@ fn diag_from_error(
         UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
             missing_definition_diag("entry function", &name, compiled_unit_with_source, file_id)
         }
-
         UpgradeCompatibilityModeError::FunctionSignatureMismatch {
             name,
             old_function,
@@ -729,6 +739,91 @@ fn function_signature_mismatch_diag(
                             "Functions are part of a module's public interface and cannot be changed during an upgrade, restore the original function's return types for function '{function_name}'."
                         )]),
                 );
+            }
+        }
+    }
+
+    Ok(diags)
+}
+
+fn struct_mismatch_diag(
+    struct_name: &Identifier,
+    old_struct: &Struct,
+    new_struct: &Struct,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let old_struct_index = lookup
+        .struct_identifier_to_index
+        .get(struct_name)
+        .context("Unable to get struct index")?;
+    let struct_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_struct_source_map(StructDefinitionIndex::new(*old_struct_index))
+        .context("Unable to get struct source map")?;
+
+    let mut diags = vec![];
+
+    if old_struct.abilities != new_struct.abilities {
+        let start = struct_sourcemap.definition_location.start() as usize;
+        let end = struct_sourcemap.definition_location.end() as usize;
+
+        diags.push(Diagnostic::error()
+            .with_message("Struct ability mismatch")
+            .with_labels(vec![Label::primary(file_id, start..end).with_message(
+                format!(
+                    "Struct '{struct_name}' has different abilities, expected {}, found {}",
+                    old_struct.abilities, new_struct.abilities
+                ),
+            )])
+            .with_notes(vec![format!(
+                "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's abilities for struct '{struct_name}'."
+            )]));
+    }
+
+    if old_struct.fields.len() != new_struct.fields.len() {
+        let start = struct_sourcemap.definition_location.start() as usize;
+        let end = struct_sourcemap.definition_location.end() as usize;
+
+        diags.push(Diagnostic::error()
+            .with_message("Struct field mismatch")
+            .with_labels(vec![Label::primary(file_id, start..end).with_message(
+                format!(
+                    "Struct '{struct_name}' has different number of fields, expected {}, found {}",
+                    old_struct.fields.len(),
+                    new_struct.fields.len()
+                ),
+            )])
+            .with_notes(vec![format!(
+                "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct '{struct_name}'."
+            )]));
+    } else if old_struct.fields != new_struct.fields {
+        for (i, (old_field, new_field)) in old_struct
+            .fields
+            .iter()
+            .zip(new_struct.fields.iter())
+            .enumerate()
+        {
+            if old_field != new_field {
+                let field = struct_sourcemap
+                    .fields
+                    .get(i)
+                    .context("Unable to get field location")?;
+                let start = field.start() as usize;
+                let end = field.end() as usize;
+
+                diags.push(Diagnostic::error()
+                    .with_message("Struct field mismatch")
+                    .with_labels(vec![Label::primary(file_id, start..end).with_message(
+                        format!(
+                            "Struct '{struct_name}' has different field {new_field} at position {i}, expected {old_field}",
+                        ),
+                    )])
+                    .with_notes(vec![format!(
+                        "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct '{struct_name}' including the ordering."
+                    )]));
             }
         }
     }
