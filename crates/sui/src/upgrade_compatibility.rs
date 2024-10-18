@@ -15,7 +15,9 @@ use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 
-use move_binary_format::file_format::{FunctionDefinitionIndex, StructDefinitionIndex, TableIndex};
+use move_binary_format::file_format::{
+    AbilitySet, FunctionDefinitionIndex, StructDefinitionIndex, TableIndex,
+};
 use move_binary_format::{
     compatibility::Compatibility,
     compatibility_mode::CompatibilityMode,
@@ -494,6 +496,8 @@ fn compare_packages(
     }
     let mut file_id_map = HashMap::new();
 
+    let mut diags: Vec<Diagnostic<usize>> = vec![];
+
     for (name, err) in errors {
         let compiled_unit_with_source = new_package
             .package
@@ -510,12 +514,25 @@ fn compare_packages(
             }
         };
 
-        for diag in diag_from_error(&err, compiled_unit_with_source, file_id, &lookup[&name])
-            .iter()
-            .flatten()
-        {
-            term::emit(&mut writer, &config, &files, diag).context("Unable to emit error")?;
+        diags.extend(diag_from_error(
+            &err,
+            compiled_unit_with_source,
+            file_id,
+            &lookup[&name],
+        )?);
+    }
+
+    // check each diag has a label
+    for diag in diags.iter() {
+        if diag.labels.is_empty() {
+            return Err(anyhow!("Diagnostic has no label"));
         }
+    }
+
+    diags.sort_by(|a, b| diag_cmp_file(a, b).then(diag_cmp_lineno(a, b)));
+
+    for diag in diags.iter() {
+        term::emit(&mut writer, &config, &files, diag).context("Unable to emit error")?;
     }
 
     Err(anyhow!(
@@ -535,11 +552,24 @@ fn diag_from_error(
         UpgradeCompatibilityModeError::StructMissing { name, .. } => {
             missing_definition_diag("struct", &name, compiled_unit_with_source, file_id)
         }
+
+        UpgradeCompatibilityModeError::StructAbilityMismatch {
+            name,
+            old_struct,
+            new_struct,
+        } => struct_ability_mismatch_diag(
+            &name,
+            old_struct,
+            new_struct,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
         UpgradeCompatibilityModeError::StructFieldMismatch {
             name,
             old_struct,
             new_struct,
-        } => struct_mismatch_diag(
+        } => struct_field_mismatch_diag(
             &name,
             old_struct,
             new_struct,
@@ -746,7 +776,7 @@ fn function_signature_mismatch_diag(
     Ok(diags)
 }
 
-fn struct_mismatch_diag(
+fn struct_ability_mismatch_diag(
     struct_name: &Identifier,
     old_struct: &Struct,
     new_struct: &Struct,
@@ -770,18 +800,62 @@ fn struct_mismatch_diag(
         let start = struct_sourcemap.definition_location.start() as usize;
         let end = struct_sourcemap.definition_location.end() as usize;
 
+        let missing_abilities =
+            AbilitySet::from_u8(old_struct.abilities.into_u8() & !new_struct.abilities.into_u8())
+                .context("Unable to get missing abilities")?;
+        let extra_abilities =
+            AbilitySet::from_u8(new_struct.abilities.into_u8() & !old_struct.abilities.into_u8())
+                .context("Unable to get extra abilities")?;
+
+        let label = match (
+            missing_abilities != AbilitySet::EMPTY,
+            extra_abilities != AbilitySet::EMPTY,
+        ) {
+            (true, true) => Label::primary(file_id, start..end).with_message(format!(
+                "Struct '{struct_name}' has unexpected abilities, missing {:?}, unexpected {:?}",
+                missing_abilities, extra_abilities
+            )),
+            (true, false) => Label::primary(file_id, start..end).with_message(format!(
+                "Struct '{struct_name}' has missing abilities {:?}",
+                missing_abilities
+            )),
+            (false, true) => Label::primary(file_id, start..end).with_message(format!(
+                "Struct '{struct_name}' has unexpected abilities {:?}",
+                extra_abilities
+            )),
+            (false, false) => unreachable!("Abilities should not be the same"),
+        };
+
         diags.push(Diagnostic::error()
             .with_message("Struct ability mismatch")
-            .with_labels(vec![Label::primary(file_id, start..end).with_message(
-                format!(
-                    "Struct '{struct_name}' has different abilities, expected {}, found {}",
-                    old_struct.abilities, new_struct.abilities
-                ),
-            )])
+            .with_labels(vec![label])
             .with_notes(vec![format!(
                 "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's abilities for struct '{struct_name}'."
             )]));
     }
+
+    Ok(diags)
+}
+
+fn struct_field_mismatch_diag(
+    struct_name: &Identifier,
+    old_struct: &Struct,
+    new_struct: &Struct,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let old_struct_index = lookup
+        .struct_identifier_to_index
+        .get(struct_name)
+        .context("Unable to get struct index")?;
+    let struct_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_struct_source_map(StructDefinitionIndex::new(*old_struct_index))
+        .context("Unable to get struct source map")?;
+
+    let mut diags = vec![];
 
     if old_struct.fields.len() != new_struct.fields.len() {
         let start = struct_sourcemap.definition_location.start() as usize;
@@ -791,7 +865,7 @@ fn struct_mismatch_diag(
             .with_message("Struct field mismatch")
             .with_labels(vec![Label::primary(file_id, start..end).with_message(
                 format!(
-                    "Struct '{struct_name}' has different number of fields, expected {}, found {}",
+                    "Struct '{struct_name}' has a different number of fields, expected {}, found {}",
                     old_struct.fields.len(),
                     new_struct.fields.len()
                 ),
@@ -814,13 +888,38 @@ fn struct_mismatch_diag(
                 let start = field.start() as usize;
                 let end = field.end() as usize;
 
+                // match of the above
+                let label = match (old_field.name != new_field.name, old_field.type_ != new_field.type_) {
+                    (true, true) => {
+                        Label::primary(file_id, start..end).with_message(
+                            format!(
+                                "Struct '{struct_name}' has different fields `{}: {}` at position {i}, expected `{}: {}`.",
+                                new_field.name, new_field.type_, old_field.name, old_field.type_
+                            ),
+                        )
+                    }
+                    (true, false) => {
+                        Label::primary(file_id, start..end).with_message(
+                            format!(
+                                "Struct '{struct_name}' has different field names '{}' at position {i}, expected '{}'.",
+                                new_field.name, old_field.name
+                            ),
+                        )
+                    }
+                    (false, true) => {
+                        Label::primary(file_id, start..end).with_message(
+                            format!(
+                                "Struct '{struct_name}' has different field types '{}' at position {i}, expected '{}'.",
+                                new_field.type_, old_field.type_
+                            ),
+                        )
+                    }
+                    (false, false) => unreachable!("Fields should no be the same"),
+                };
+
                 diags.push(Diagnostic::error()
                     .with_message("Struct field mismatch")
-                    .with_labels(vec![Label::primary(file_id, start..end).with_message(
-                        format!(
-                            "Struct '{struct_name}' has different field {new_field} at position {i}, expected {old_field}",
-                        ),
-                    )])
+                    .with_labels(vec![label])
                     .with_notes(vec![format!(
                         "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct '{struct_name}' including the ordering."
                     )]));
@@ -829,4 +928,34 @@ fn struct_mismatch_diag(
     }
 
     Ok(diags)
+}
+
+/// sort by line number, assumes if there are multiple labels they are on the same line
+/// if there are no labels return Ordering::Less, (unless both a,b both missing labels)
+fn diag_cmp_lineno(a: &Diagnostic<usize>, b: &Diagnostic<usize>) -> std::cmp::Ordering {
+    match a.labels.iter().next() {
+        Some(a_label) => match b.labels.iter().next() {
+            Some(b_label) => a_label.range.start.cmp(&b_label.range.start),
+            None => std::cmp::Ordering::Greater,
+        },
+        None => match b.labels.iter().next() {
+            Some(_) => std::cmp::Ordering::Less,
+            None => std::cmp::Ordering::Equal,
+        },
+    }
+}
+
+/// sort by file, assumes if there are multiple labels they are on the same line
+/// if there are no labels return Ordering::Less, (unless both a,b both missing labels)
+fn diag_cmp_file(a: &Diagnostic<usize>, b: &Diagnostic<usize>) -> std::cmp::Ordering {
+    match a.labels.iter().next() {
+        Some(a_label) => match b.labels.iter().next() {
+            Some(b_label) => a_label.file_id.cmp(&b_label.file_id),
+            None => std::cmp::Ordering::Less,
+        },
+        None => match b.labels.iter().next() {
+            Some(_) => std::cmp::Ordering::Greater,
+            None => std::cmp::Ordering::Equal,
+        },
+    }
 }

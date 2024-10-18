@@ -1,0 +1,62 @@
+---
+source: crates/sui/src/unit_tests/upgrade_compatibility_tests.rs
+expression: err.to_string()
+---
+error: Struct ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:10:19
+   │
+10 │     public struct AddExtraAbility has copy {} // added copy
+   │                   ^^^^^^^^^^^^^^^ Struct 'AddExtraAbility' has unexpected abilities [Copy, ]
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's abilities for struct 'AddExtraAbility'.
+
+error: Struct ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:11:19
+   │
+11 │     public struct RemoveAbility has drop {} // removed copy
+   │                   ^^^^^^^^^^^^^ Struct 'RemoveAbility' has missing abilities [Copy, ]
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's abilities for struct 'RemoveAbility'.
+
+error: Struct ability mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:12:19
+   │
+12 │     public struct AddAndRemoveAbility has drop, store {} // remove copy, add store
+   │                   ^^^^^^^^^^^^^^^^^^^ Struct 'AddAndRemoveAbility' has unexpected abilities, missing [Copy, ], unexpected [Store, ]
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's abilities for struct 'AddAndRemoveAbility'.
+
+error: Struct field mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:16:19
+   │
+16 │     public struct AddField {
+   │                   ^^^^^^^^ Struct 'AddField' has a different number of fields, expected 1, found 2
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct 'AddField'.
+
+error: Struct field mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:21:19
+   │
+21 │     public struct RemoveField {
+   │                   ^^^^^^^^^^^ Struct 'RemoveField' has a different number of fields, expected 2, found 1
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct 'RemoveField'.
+
+error: Struct field mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:29:9
+   │
+29 │         c: u64, // changed from b to c
+   │         ^ Struct 'ChangeFieldName' has different field names 'c' at position 1, expected 'b'.
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct 'ChangeFieldName' including the ordering.
+
+error: Struct field mismatch
+   ┌─ /Users/jordanjennings/code/sui/crates/sui/src/unit_tests/fixtures/upgrade_errors/struct_mismatch_v2/sources/UpgradeErrors.move:35:9
+   │
+35 │         b: u32, // changed to u32
+   │         ^ Struct 'ChangeFieldType' has different field types 'u32' at position 1, expected 'u64'.
+   │
+   = Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct 'ChangeFieldType' including the ordering.
+
+
+Upgrade failed, this package requires changes to be compatible with the existing package. It's upgrade policy is set to 'Compatible'.
