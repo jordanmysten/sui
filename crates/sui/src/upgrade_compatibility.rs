@@ -6,7 +6,7 @@
 mod upgrade_compatibility_tests;
 
 use std::collections::hash_map::Entry::{Occupied, Vacant};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{stdout, IsTerminal};
 
@@ -16,7 +16,7 @@ use codespan_reporting::files::SimpleFiles;
 use codespan_reporting::term;
 
 use move_binary_format::file_format::{
-    AbilitySet, FunctionDefinitionIndex, StructDefinitionIndex, TableIndex,
+    AbilitySet, EnumDefinitionIndex, FunctionDefinitionIndex, StructDefinitionIndex, TableIndex,
 };
 use move_binary_format::{
     compatibility::Compatibility,
@@ -525,7 +525,7 @@ fn compare_packages(
     // check each diag has a label
     for diag in diags.iter() {
         if diag.labels.is_empty() {
-            return Err(anyhow!("Diagnostic has no label"));
+            return Err(anyhow!("A diagnostic has no label"));
         }
     }
 
@@ -580,6 +580,51 @@ fn diag_from_error(
         UpgradeCompatibilityModeError::EnumMissing { name, .. } => {
             missing_definition_diag("enum", &name, compiled_unit_with_source, file_id)
         }
+        UpgradeCompatibilityModeError::EnumAbilityMismatch {
+            name,
+            old_enum,
+            new_enum,
+        } => enum_ability_mismatch_diag(
+            &name,
+            old_enum,
+            new_enum,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
+
+        UpgradeCompatibilityModeError::EnumNewVariant {
+            name,
+            old_enum,
+            new_enum,
+        } => enum_new_variant_diag(
+            &name,
+            old_enum,
+            new_enum,
+            // *tag,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
+
+        UpgradeCompatibilityModeError::EnumVariantMissing { name, tag, .. } => {
+            enum_variant_missing_diag(&name, *tag, compiled_unit_with_source, file_id, lookup)
+        }
+
+        UpgradeCompatibilityModeError::EnumVariantMismatch {
+            name,
+            old_enum,
+            new_enum,
+            ..
+        } => enum_variant_mismatch_diag(
+            &name,
+            old_enum,
+            new_enum,
+            compiled_unit_with_source,
+            file_id,
+            lookup,
+        ),
+
         UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
             missing_definition_diag("public function", &name, compiled_unit_with_source, file_id)
         }
@@ -928,6 +973,254 @@ fn struct_field_mismatch_diag(
     }
 
     Ok(diags)
+}
+
+fn enum_ability_mismatch_diag(
+    enum_name: &Identifier,
+    old_enum: &Enum,
+    new_enum: &Enum,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let mut diags = vec![];
+
+    let old_enum_index = lookup
+        .enum_identifier_to_index
+        .get(enum_name)
+        .context("Unable to get enum index")?;
+
+    let enum_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_enum_source_map(EnumDefinitionIndex::new(*old_enum_index))
+        .context("Unable to get enum source map")?;
+
+    let start_def = enum_sourcemap.definition_location.start() as usize;
+    let end_def = enum_sourcemap.definition_location.end() as usize;
+
+    if old_enum.abilities != new_enum.abilities {
+        let missing_abilities =
+            AbilitySet::from_u8(old_enum.abilities.into_u8() & !new_enum.abilities.into_u8())
+                .context("Unable to get missing abilities")?;
+        let extra_abilities =
+            AbilitySet::from_u8(new_enum.abilities.into_u8() & !old_enum.abilities.into_u8())
+                .context("Unable to get extra abilities")?;
+
+        let label = match (
+            missing_abilities != AbilitySet::EMPTY,
+            extra_abilities != AbilitySet::EMPTY,
+        ) {
+            (true, true) => Label::primary(file_id, start_def..end_def).with_message(format!(
+                "Enum '{enum_name}' has unexpected abilities, missing {:?}, unexpected {:?}",
+                missing_abilities, extra_abilities
+            )),
+            (true, false) => Label::primary(file_id, start_def..end_def).with_message(format!(
+                "Enum '{enum_name}' has missing abilities {:?}",
+                missing_abilities
+            )),
+            (false, true) => Label::primary(file_id, start_def..end_def).with_message(format!(
+                "Enum '{enum_name}' has unexpected abilities {:?}",
+                extra_abilities
+            )),
+            (false, false) => unreachable!("Abilities should not be the same"),
+        };
+
+        diags.push(Diagnostic::error()
+            .with_message("Enum ability mismatch")
+            .with_labels(vec![label])
+            .with_notes(vec![format!(
+                "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum '{enum_name}'."
+            )]));
+    }
+    Ok(diags)
+}
+
+fn enum_variant_mismatch_diag(
+    enum_name: &Identifier,
+    old_enum: &Enum,
+    new_enum: &Enum,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let mut diags = vec![];
+
+    let enum_index = lookup
+        .enum_identifier_to_index
+        .get(enum_name)
+        .context("Unable to get enum index")?;
+
+    let enum_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_enum_source_map(EnumDefinitionIndex::new(*enum_index))
+        .context("Unable to get enum source map")?;
+
+    for (i, (old_variant, new_variant)) in old_enum
+        .variants
+        .iter()
+        .zip(new_enum.variants.iter())
+        .enumerate()
+    {
+        if old_variant != new_variant {
+            let variant = &enum_sourcemap
+                .variants
+                .get(i)
+                .context("Unable to get variant location")?
+                .0;
+
+            let start = enum_sourcemap.definition_location.start() as usize;
+            let end = enum_sourcemap.definition_location.end() as usize;
+            let enum_label = Label::secondary(file_id, start..end);
+
+            let start_variant = variant.1.start() as usize;
+            let end_variant = variant.1.end() as usize;
+
+            let label = match (old_variant.name != new_variant.name, old_variant.fields != new_variant.fields) {
+                (true, true) => {
+                    Label::primary(file_id, start_variant..end_variant).with_message(
+                        format!(
+                            "Enum '{enum_name}' has different variant '{}' at position {i}, expected '{}'.",
+                            new_variant.name, old_variant.name
+                        ),
+                    )
+                }
+                (true, false) => {
+                    Label::primary(file_id, start_variant..end_variant).with_message(
+                        format!(
+                            "Enum '{enum_name}' has different variant name '{}' at position {i}, expected '{}'.",
+                            new_variant.name, old_variant.name
+                        ),
+                    )
+                }
+                (false, true) => {
+                    let new_variant_fields = new_variant.fields
+                        .iter()
+                        .map(|f| format!("{:?}", f))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    let old_variant_fields = old_variant.fields
+                        .iter()
+                        .map(|f| format!("{:?}", f))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+
+                    Label::primary(file_id, start_variant..end_variant).with_message(
+                        format!(
+                            "Enum '{enum_name}' has different variant fields '{}' at position {i}, expected '{}'.",
+                            new_variant_fields, old_variant_fields
+                        ),
+                    )
+                }
+                (false, false) => unreachable!("Variants should not be the same"),
+            };
+
+            diags.push(Diagnostic::error()
+                .with_message("Enum variant mismatch")
+                .with_labels(vec![label, enum_label])
+                .with_notes(vec![format!(
+                    "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
+                )]));
+        }
+    }
+
+    Ok(diags)
+}
+
+fn enum_new_variant_diag(
+    enum_name: &Identifier,
+    old_enum: &Enum,
+    new_enum: &Enum,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let mut diags = vec![];
+
+    let enum_index = lookup
+        .enum_identifier_to_index
+        .get(enum_name)
+        .context("Unable to get enum index")?;
+
+    let enum_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_enum_source_map(EnumDefinitionIndex::new(*enum_index))
+        .context("Unable to get enum source map")?;
+
+    let old_enum_map = old_enum
+        .variants
+        .iter()
+        .map(|v| v.name.clone())
+        .collect::<HashSet<_>>();
+
+    let start_def = enum_sourcemap.definition_location.start() as usize;
+    let end_def = enum_sourcemap.definition_location.end() as usize;
+
+    for (i, new_variant) in new_enum.variants.iter().enumerate() {
+        if !old_enum_map.contains(&new_variant.name) {
+            let enum_label = Label::secondary(file_id, start_def..end_def);
+
+            let variant = &enum_sourcemap
+                .variants
+                .get(i)
+                .context("Unable to get variant location")?
+                .0;
+
+            let start_variant = variant.1.start() as usize;
+            let end_variant = variant.1.end() as usize;
+
+            diags.push(Diagnostic::error()
+                .with_message("Enum new variant")
+                .with_labels(vec![enum_label, Label::primary(file_id, start_variant..end_variant).with_message(
+                    format!(
+                        "Enum '{enum_name}' has a new unexpected variant '{}' at position {i}.",
+                        new_variant.name
+                    ),
+                )])
+                .with_notes(vec![format!(
+                    "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
+                )]));
+        }
+    }
+
+    Ok(diags)
+}
+
+fn enum_variant_missing_diag(
+    enum_name: &Identifier,
+    tag: usize,
+    compiled_unit_with_source: &CompiledUnitWithSource,
+    file_id: usize,
+    lookup: &IdentifierTableLookup,
+) -> Result<Vec<Diagnostic<usize>>, Error> {
+    let enum_index = lookup
+        .enum_identifier_to_index
+        .get(enum_name)
+        .context("Unable to get enum index")?;
+
+    let enum_sourcemap = compiled_unit_with_source
+        .unit
+        .source_map
+        .get_enum_source_map(EnumDefinitionIndex::new(*enum_index))
+        .context("Unable to get enum source map")?;
+
+    let start_def = enum_sourcemap.definition_location.start() as usize;
+    let end_def = enum_sourcemap.definition_location.end() as usize;
+    let enum_label = Label::secondary(file_id, start_def..end_def);
+
+    Ok(vec![Diagnostic::error()
+        .with_message("Enum variant missing")
+        .with_labels(vec![enum_label, Label::primary(file_id, start_def..end_def).with_message(
+            format!(
+                "Enum '{enum_name}' has a missing variant at position {tag}.",
+            ),
+        )])
+        .with_notes(vec![format!(
+            "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
+        )])])
 }
 
 /// sort by line number, assumes if there are multiple labels they are on the same line
