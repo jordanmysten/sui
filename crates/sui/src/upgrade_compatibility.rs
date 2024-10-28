@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod upgrade_compatibility_tests;
 
+use codespan_reporting::diagnostic::Label;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{stdout, IsTerminal};
@@ -667,7 +668,13 @@ fn diag_from_error(
         ),
 
         UpgradeCompatibilityModeError::EnumVariantMissing { name, tag, .. } => {
-            enum_variant_missing_diag(&name, *tag, compiled_unit_with_source, lookup)
+            enum_variant_missing_diag(
+                Declarations::PublicMissing, // TODO
+                &name,
+                *tag,
+                compiled_unit_with_source,
+                lookup,
+            )
         }
 
         UpgradeCompatibilityModeError::EnumVariantMismatch {
@@ -675,21 +682,37 @@ fn diag_from_error(
             old_enum,
             new_enum,
             ..
-        } => {
-            enum_variant_mismatch_diag(&name, old_enum, new_enum, compiled_unit_with_source, lookup)
-        }
+        } => enum_variant_mismatch_diag(
+            Declarations::PublicMissing, // TODO
+            &name,
+            old_enum,
+            new_enum,
+            compiled_unit_with_source,
+            lookup,
+        ),
 
         UpgradeCompatibilityModeError::FunctionMissingPublic { name, .. } => {
-            missing_definition_diag("public function", &name, compiled_unit_with_source)
+            missing_definition_diag(
+                Declarations::PublicMissing, // TODO
+                "public function",
+                &name,
+                compiled_unit_with_source,
+            )
         }
         UpgradeCompatibilityModeError::FunctionMissingEntry { name, .. } => {
-            missing_definition_diag("entry function", &name, compiled_unit_with_source)
+            missing_definition_diag(
+                Declarations::PublicMissing, // TODO
+                "entry function",
+                &name,
+                compiled_unit_with_source,
+            )
         }
         UpgradeCompatibilityModeError::FunctionSignatureMismatch {
             name,
             old_function,
             new_function,
         } => function_signature_mismatch_diag(
+            Declarations::PublicMissing, // TODO
             &name,
             old_function,
             new_function,
@@ -702,7 +725,7 @@ fn diag_from_error(
 
 /// Return a diagnostic for a missing definition.
 fn missing_definition_diag(
-    error: impl Into<DiagnosticInfo>,
+    error: impl Into<DiagnosticInfo> + Copy,
     declaration_kind: &str,
     identifier_name: &Identifier,
     compiled_unit_with_source: &CompiledUnitWithSource,
@@ -713,34 +736,28 @@ fn missing_definition_diag(
         .source_map
         .definition_location;
 
-    Diagnostic::new(
-        error,
-        (loc, format!(
-            "{declaration_kind} '{identifier_name}' is missing",
-            declaration_kind = declaration_kind,
-            identifier_name = identifier_name,
-        )),
-        std::iter::empty::<(Loc, String)>(),
-        vec![format!(
-            "{declaration_kind} is missing expected {declaration_kind} '{identifier_name}', but found none",
-        ),
-         format!(
-             "{declaration_kind}s are part of a module's public interface and cannot be removed or changed during an upgrade",
-         ),
-         format!(
-             "add missing {declaration_kind} '{identifier_name}' back to the module '{module_name}'.",
-         )]
-    )
     let mut diags = Diagnostics::new();
 
-    diags.add(Diagnostic::new(
-        error_code,
-        (loc, format!("{declaration_kind} '{identifier_name}' is missing")),
-        Vec::<(Loc, String)>::new(),
-        vec![format!("{declaration_kind} is missing expected {declaration_kind} '{identifier_name}', but found none"),
-             format!("{declaration_kind}s are part of a module's public interface and cannot be removed or changed during an upgrade"),
-             format!("add missing {declaration_kind} '{identifier_name}' back to the module '{module_name}'.")],
-    ));
+    diags.add(
+        Diagnostic::new(
+            error,
+            (loc, format!(
+                "{declaration_kind} '{identifier_name}' is missing",
+                declaration_kind = declaration_kind,
+                identifier_name = identifier_name,
+            )),
+            std::iter::empty::<(Loc, String)>(),
+            vec![format!(
+                "{declaration_kind} is missing expected {declaration_kind} '{identifier_name}', but found none",
+            ),
+                 format!(
+                     "{declaration_kind}s are part of a module's public interface and cannot be removed or changed during an upgrade",
+                 ),
+                 format!(
+                     "add missing {declaration_kind} '{identifier_name}' back to the module '{module_name}'.",
+                 )]
+        )
+    );
 
     Ok(diags)
 }
@@ -749,7 +766,7 @@ fn missing_definition_diag(
 /// start by checking the lengths of the parameters and returns and return a diagnostic if they are different
 /// if the lengths are the same check each parameter piece wise and return a diagnostic for each mismatch
 fn function_signature_mismatch_diag(
-    error: &UpgradeCompatibilityModeError,
+    error: impl Into<DiagnosticInfo> + std::marker::Copy,
     function_name: &Identifier,
     old_function: &Function,
     new_function: &Function,
@@ -851,7 +868,7 @@ fn function_signature_mismatch_diag(
 }
 
 fn struct_ability_mismatch_diag(
-    error_code: &UpgradeCompatibilityModeError,
+    error_code: impl Into<DiagnosticInfo> + Copy,
     struct_name: &Identifier,
     old_struct: &Struct,
     new_struct: &Struct,
@@ -915,7 +932,7 @@ fn struct_ability_mismatch_diag(
 }
 
 fn struct_field_mismatch_diag(
-    error_code: &UpgradeCompatibilityModeError,
+    error_code: impl Into<DiagnosticInfo> + Copy,
     struct_name: &Identifier,
     old_struct: &Struct,
     new_struct: &Struct,
@@ -954,12 +971,10 @@ fn struct_field_mismatch_diag(
             .enumerate()
         {
             if old_field != new_field {
-                let field = struct_sourcemap
+                let field_loc = struct_sourcemap
                     .fields
                     .get(i)
                     .context("Unable to get field location")?;
-                let start = field.start() as usize;
-                let end = field.end() as usize;
 
                 // match of the above
                 let label = match (old_field.name != new_field.name, old_field.type_ != new_field.type_) {
@@ -981,7 +996,10 @@ fn struct_field_mismatch_diag(
                 diags.add(
                     Diagnostic::new(
                         error_code,
-                        (start..end, "Struct field mismatch"),
+                        (field_loc, format!(
+                            "Struct '{struct_name}' has different fields `{}: {}` at position {i}, expected `{}: {}`.",
+                            new_field.name, new_field.type_, old_field.name, old_field.type_
+                        )),
                         Vec::<(Loc, String)>::new(),
                         vec![format!(
                             "Structs are part of a module's public interface and cannot be changed during an upgrade, restore the original struct's fields for struct '{struct_name}' including the ordering."
@@ -1003,15 +1021,14 @@ fn struct_field_mismatch_diag(
 }
 
 fn enum_ability_mismatch_diag(
-    error_code: UpgradeCompatibilityModeError,
+    error_code: impl Into<DiagnosticInfo> + Copy,
     enum_name: &Identifier,
     old_enum: &Enum,
     new_enum: &Enum,
     compiled_unit_with_source: &CompiledUnitWithSource,
     lookup: &IdentifierTableLookup,
 ) -> Result<Diagnostics, Error> {
-    todo!();
-    let mut diags = vec![];
+    let mut diags = Diagnostics::new();
 
     let old_enum_index = lookup
         .enum_identifier_to_index
@@ -1024,8 +1041,7 @@ fn enum_ability_mismatch_diag(
         .get_enum_source_map(EnumDefinitionIndex::new(*old_enum_index))
         .context("Unable to get enum source map")?;
 
-    let start_def = enum_sourcemap.definition_location.start() as usize;
-    let end_def = enum_sourcemap.definition_location.end() as usize;
+    let def_loc = enum_sourcemap.definition_location;
 
     if old_enum.abilities != new_enum.abilities {
         let missing_abilities =
@@ -1039,39 +1055,44 @@ fn enum_ability_mismatch_diag(
             missing_abilities != AbilitySet::EMPTY,
             extra_abilities != AbilitySet::EMPTY,
         ) {
-            (true, true) => Label::primary(file_id, start_def..end_def).with_message(format!(
+            (true, true) => format!(
                 "Enum '{enum_name}' has unexpected abilities, missing {:?}, unexpected {:?}",
                 missing_abilities, extra_abilities
-            )),
-            (true, false) => Label::primary(file_id, start_def..end_def).with_message(format!(
+            ),
+            (true, false) => format!(
                 "Enum '{enum_name}' has missing abilities {:?}",
                 missing_abilities
-            )),
-            (false, true) => Label::primary(file_id, start_def..end_def).with_message(format!(
+            ),
+            (false, true) => format!(
                 "Enum '{enum_name}' has unexpected abilities {:?}",
                 extra_abilities
-            )),
+            ),
             (false, false) => unreachable!("Abilities should not be the same"),
         };
 
-        diags.push(Diagnostic::error()
-            .with_message("Enum ability mismatch")
-            .with_labels(vec![label])
-            .with_notes(vec![format!(
-                "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum '{enum_name}'."
-            )]));
+        diags.add( // TODO CHECK
+                   diag!(
+                error_code,
+                (def_loc, "Enum ability mismatch"),
+                // TODO secondary enum
+                note: format!(
+                    "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's abilities for enum '{enum_name}'.",
+                ),
+            )
+        );
     }
     Ok(diags)
 }
 
 fn enum_variant_mismatch_diag(
+    error: impl Into<DiagnosticInfo> + Copy,
     enum_name: &Identifier,
     old_enum: &Enum,
     new_enum: &Enum,
     compiled_unit_with_source: &CompiledUnitWithSource,
     lookup: &IdentifierTableLookup,
 ) -> Result<Diagnostics, Error> {
-    let mut diags = vec![];
+    let mut diags = Diagnostics::new();
 
     let enum_index = lookup
         .enum_identifier_to_index
@@ -1097,30 +1118,17 @@ fn enum_variant_mismatch_diag(
                 .context("Unable to get variant location")?
                 .0;
 
-            let start = enum_sourcemap.definition_location.start() as usize;
-            let end = enum_sourcemap.definition_location.end() as usize;
-            let enum_label = Label::secondary(file_id, start..end);
-
-            let start_variant = variant.1.start() as usize;
-            let end_variant = variant.1.end() as usize;
+            let variant_loc = enum_sourcemap.definition_location;
 
             let label = match (old_variant.name != new_variant.name, old_variant.fields != new_variant.fields) {
-                (true, true) => {
-                    Label::primary(file_id, start_variant..end_variant).with_message(
-                        format!(
-                            "Enum '{enum_name}' has different variant '{}' at position {i}, expected '{}'.",
-                            new_variant.name, old_variant.name
-                        ),
-                    )
-                }
-                (true, false) => {
-                    Label::primary(file_id, start_variant..end_variant).with_message(
-                        format!(
-                            "Enum '{enum_name}' has different variant name '{}' at position {i}, expected '{}'.",
-                            new_variant.name, old_variant.name
-                        ),
-                    )
-                }
+                (true, true) => format!(
+                    "Enum '{enum_name}' has different variant '{}' at position {i}, expected '{}'.",
+                    new_variant.name, old_variant.name
+                ),
+                (true, false) => format!(
+                    "Enum '{enum_name}' has different variant name '{}' at position {i}, expected '{}'.",
+                    new_variant.name, old_variant.name
+                ),
                 (false, true) => {
                     let new_variant_fields = new_variant.fields
                         .iter()
@@ -1134,22 +1142,23 @@ fn enum_variant_mismatch_diag(
                         .collect::<Vec<_>>()
                         .join(", ");
 
-                    Label::primary(file_id, start_variant..end_variant).with_message(
-                        format!(
-                            "Enum '{enum_name}' has different variant fields '{}' at position {i}, expected '{}'.",
-                            new_variant_fields, old_variant_fields
-                        ),
-                    )
+                    format!(
+                        "Enum '{enum_name}' has different variant fields '{}' at position {i}, expected '{}'.",
+                        new_variant_fields, old_variant_fields)
                 }
                 (false, false) => unreachable!("Variants should not be the same"),
             };
 
-            diags.push(Diagnostic::error()
-                .with_message("Enum variant mismatch")
-                .with_labels(vec![label, enum_label])
-                .with_notes(vec![format!(
-                    "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
-                )]));
+            diags.add(
+                diag!(
+                    error,
+                    (variant_loc, label),
+                    // TODO enum label secondary here
+                    note: format!(
+                        "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'.",
+                    ),
+                )
+            );
         }
     }
 
@@ -1157,14 +1166,14 @@ fn enum_variant_mismatch_diag(
 }
 
 fn enum_new_variant_diag(
-    error: &UpgradeCompatibilityModeError,
+    error: impl Into<DiagnosticInfo> + Copy,
     enum_name: &Identifier,
     old_enum: &Enum,
     new_enum: &Enum,
     compiled_unit_with_source: &CompiledUnitWithSource,
     lookup: &IdentifierTableLookup,
 ) -> Result<Diagnostics, Error> {
-    let mut diags = vec![];
+    let mut diags = Diagnostics::new();
 
     let enum_index = lookup
         .enum_identifier_to_index
@@ -1183,33 +1192,29 @@ fn enum_new_variant_diag(
         .map(|v| v.name.clone())
         .collect::<HashSet<_>>();
 
-    let start_def = enum_sourcemap.definition_location.start() as usize;
-    let end_def = enum_sourcemap.definition_location.end() as usize;
+    let def_loc = enum_sourcemap.definition_location;
 
     for (i, new_variant) in new_enum.variants.iter().enumerate() {
         if !old_enum_map.contains(&new_variant.name) {
-            let enum_label = Label::secondary(file_id, start_def..end_def);
-
             let variant = &enum_sourcemap
                 .variants
                 .get(i)
                 .context("Unable to get variant location")?
                 .0;
 
-            let start_variant = variant.1.start() as usize;
-            let end_variant = variant.1.end() as usize;
-
-            diags.push(Diagnostic::error()
-                .with_message("Enum new variant")
-                .with_labels(vec![enum_label, Label::primary(file_id, start_variant..end_variant).with_message(
-                    format!(
+            diags.add(
+                diag!(
+                    error,
+                    (variant.1, format!(
                         "Enum '{enum_name}' has a new unexpected variant '{}' at position {i}.",
                         new_variant.name
+                    )),
+                    // TODO NEED TO SHOW THE ENUM LINE HERE
+                    note: format!(
+                        "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'.",
                     ),
-                )])
-                .with_notes(vec![format!(
-                    "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
-                )]));
+                )
+            )
         }
     }
 
@@ -1217,13 +1222,12 @@ fn enum_new_variant_diag(
 }
 
 fn enum_variant_missing_diag(
-    error: &UpgradeCompatibilityModeError,
+    error: impl Into<DiagnosticInfo> + Copy,
     enum_name: &Identifier,
     tag: usize,
     compiled_unit_with_source: &CompiledUnitWithSource,
     lookup: &IdentifierTableLookup,
 ) -> Result<Diagnostics, Error> {
-    todo!();
     let enum_index = lookup
         .enum_identifier_to_index
         .get(enum_name)
@@ -1235,18 +1239,21 @@ fn enum_variant_missing_diag(
         .get_enum_source_map(EnumDefinitionIndex::new(*enum_index))
         .context("Unable to get enum source map")?;
 
-    let start_def = enum_sourcemap.definition_location.start() as usize;
-    let end_def = enum_sourcemap.definition_location.end() as usize;
-    let enum_label = Label::secondary(file_id, start_def..end_def);
+    // let start_def = enum_sourcemap.definition_location.start() as usize;
+    // let end_def = enum_sourcemap.definition_location.end() as usize;
+    // let enum_label = Label::secondary(file_id, start_def..end_def);
 
-    Ok(vec![Diagnostic::error()
-        .with_message("Enum variant missing")
-        .with_labels(vec![enum_label, Label::primary(file_id, start_def..end_def).with_message(
+    let mut diags = Diagnostics::new();
+
+    diags.add(diag!(
+        error,
+        (
+            enum_sourcemap.definition_location,
             format!(
                 "Enum '{enum_name}' has a missing variant at position {tag}.",
-            ),
-        )])
-        .with_notes(vec![format!(
-            "Enums are part of a module's public interface and cannot be changed during an upgrade, restore the original enum's variants for enum '{enum_name}'."
-        )])])
+            )
+        ),
+    ));
+
+    Ok(diags)
 }
