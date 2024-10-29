@@ -747,6 +747,20 @@ macro_rules! diag {
             std::iter::empty::<String>(),
         )
     }};
+    ($code: expr, $primary: expr, $($secondary: expr),+ $(,)?, note: $($note: expr),* $(,)?) => {{
+        #[allow(unused)]
+        use $crate::diagnostics::codes::*;
+        $crate::diagnostics::Diagnostic::new(
+            $code,
+            $primary,
+            vec![$($secondary, )*],
+            vec![$($note, )*] as Vec<String>,
+        )
+    }};
+}
+
+fn test() {
+    diag!(codes::Bug::ICE, (loc, "msg"), note: "note");
 }
 
 pub const ICE_BUG_REPORT_MESSAGE: &str =
