@@ -747,20 +747,37 @@ macro_rules! diag {
             std::iter::empty::<String>(),
         )
     }};
-    ($code: expr, $primary: expr, $($secondary: expr),+ $(,)?, note: $($note: expr),* $(,)?) => {{
+    ($code: expr, $primary: expr, secondary: $($secondary: expr),+ $(,)?, note: $($note: expr),* $(,)?) => {{
         #[allow(unused)]
         use $crate::diagnostics::codes::*;
         $crate::diagnostics::Diagnostic::new(
             $code,
             $primary,
             vec![$($secondary, )*],
-            vec![$($note, )*] as Vec<String>,
+            vec![$($note.to_string(), )*] // Ensure all notes are strings
+        )
+    }};
+
+    // Pattern without secondary
+    ($code: expr, $primary: expr, note: $($note: expr),* $(,)?) => {{
+        #[allow(unused)]
+        use $crate::diagnostics::codes::*;
+        $crate::diagnostics::Diagnostic::new(
+            $code,
+            $primary,
+            Vec::new(), // Empty Vec for secondary
+            vec![$($note.to_string(), )*] // Ensure all notes are strings
         )
     }};
 }
 
+#[allow(dead_code)]
 fn test() {
-    diag!(codes::Bug::ICE, (loc, "msg"), note: "note");
+    let _ = diag!(codes::Bug::ICE, (Loc::new(FileHash::empty(), 0, 0), "msg"), note: "note");
+    let _ = diag!(
+        codes::Bug::ICE,
+        (Loc::new(FileHash::empty(), 0, 0), "msg"),
+        secondary: (Loc::new(FileHash::empty(), 0, 0), "msg"), note: "note");
 }
 
 pub const ICE_BUG_REPORT_MESSAGE: &str =
