@@ -1147,7 +1147,7 @@ async fn test_dry_run_dev_inspect_max_gas_version() {
     assert_eq!(effects.status(), &SuiExecutionStatus::Success);
 }
 
-// private, package(public) and entry from another module tests
+// ensure that dry run cannot call private functions
 #[tokio::test]
 async fn test_dry_run_no_arbitrary_functions() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
@@ -1266,7 +1266,7 @@ async fn test_dry_run_publish() {
     }
 }
 
-// Dry run should behave the same as normal mode where object ownership rules are maintained
+// dry run should not allow violations of ownership
 #[tokio::test]
 async fn test_dry_run_invalid_object_ownership() {
     // User transaction that attempts to mutate an object it does not own will fail to sign.
@@ -3198,37 +3198,6 @@ async fn test_invalid_object_ownership() {
         UserInputError::try_from(e).unwrap(),
         UserInputError::IncorrectUserSignature { error:  format!("Object {:?} is owned by account address {:?}, but given owner/signer address is {:?}", invalid_ownership_object_id, invalid_owner, sender)}
     );
-
-    // now dev inspect
-    //
-    // let transfer_transaction = init_transfer_transaction(
-    //     &authority_state,
-    //     sender,
-    //     &sender_key,
-    //     recipient,
-    //     gas_ref,
-    //     gas_ref,
-    //     rgp * TEST_ONLY_GAS_UNIT_FOR_TRANSFER,
-    //     rgp,
-    // );
-    //
-    // let pt = ProgrammableTransaction {
-    //     inputs: vec![
-    //         CallArg::Object(ObjectArg::ImmOrOwnedObject(invalid_ownership_object_ref)),
-    //         CallArg::Pure(recipient.to_vec()),
-    //     ],
-    //     commands: vec![Command::TransferObjects(
-    //         vec![Argument::Input(0)],
-    //         Argument::Input(1),
-    //     )],
-    // };
-    // let kind = TransactionKind::ProgrammableTransaction(pt);
-    // let DevInspectResults { error, .. } = authority_state
-    //     .dev_inspect_transaction_block(sender, kind, None, None, None, None, None, Some(false))
-    //     .await
-    //     .unwrap();
-    //
-    // println!("error: {:?}", error);
 }
 
 #[tokio::test]
