@@ -178,7 +178,8 @@ async fn construct_shared_object_transaction_with_sequence_number(
 
     // Make a sample transaction.
     let (validator, fullnode, package) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
     validator.insert_genesis_object(shared_object.clone()).await;
     fullnode.insert_genesis_object(shared_object.clone()).await;
     let rgp = validator.reference_gas_price_for_testing().unwrap();
@@ -268,7 +269,8 @@ async fn test_dry_run_no_gas_big_transfer() {
     let recipient = dbg_addr(2);
     let gas_object_id = ObjectID::random();
     let (_, fullnode, _) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     let amount = 1_000_000_000u64;
     let mut builder = ProgrammableTransactionBuilder::new();
@@ -294,12 +296,20 @@ async fn test_dry_run_no_gas_big_transfer() {
     assert_eq!(*dry_run_res.effects.status(), SuiExecutionStatus::Success);
 }
 
+// [#tokio::test]
+// async fn test_dry_run_no_arbitrary_functions
+// private, package(public) and entry from another module tests
+
+// test_dry_run_no_arbitrary_values
+// unowned objects?
+
 #[tokio::test]
 async fn test_dev_inspect_object_by_bytes() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (validator, fullnode, object_basics) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     // test normal call
     let DevInspectResults {
@@ -434,7 +444,8 @@ async fn test_dev_inspect_unowned_object() {
     let (alice, alice_key): (_, AccountKeyPair) = get_key_pair();
     let alice_gas_id = ObjectID::random();
     let (validator, fullnode, object_basics) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(alice, alice_gas_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(alice, alice_gas_id, None)])
+            .await;
     let (bob, _bob_key): (_, AccountKeyPair) = get_key_pair();
 
     // make an object, send it to bob
@@ -501,8 +512,12 @@ async fn test_dev_inspect_dynamic_field() {
         let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
         let gas_object_id = ObjectID::random();
         let (validator, fullnode, object_basics) =
-            init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)])
-                .await;
+            init_state_with_ids_and_object_basics_with_fullnode(vec![(
+                sender,
+                gas_object_id,
+                None,
+            )])
+            .await;
         macro_rules! mk_obj {
             () => {{
                 let effects = call_move_(
@@ -540,7 +555,8 @@ async fn test_dev_inspect_dynamic_field() {
     let (sender, _sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (_validator, fullnode, object_basics) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     // add a dynamic field to itself
     let pt = ProgrammableTransaction {
@@ -608,7 +624,8 @@ async fn test_dev_inspect_return_values() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (validator, fullnode, object_basics) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     // make an object
     let init_value = 16_u64;
@@ -893,7 +910,8 @@ async fn test_dev_inspect_uses_unbound_object() {
     let (sender, _sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (_validator, fullnode, object_basics) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     let pt = {
         let mut builder = ProgrammableTransactionBuilder::new();
@@ -1134,6 +1152,67 @@ async fn test_dry_run_dev_inspect_max_gas_version() {
     let DryRunTransactionBlockResponse { effects, .. } =
         fullnode.dry_exec_transaction(data, digest).await.unwrap().0;
     assert_eq!(effects.status(), &SuiExecutionStatus::Success);
+}
+
+// Dry run should behave the same as normal mode where object ownership rules are maintained
+#[tokio::test]
+async fn test_dry_run_invalid_object_ownership() {
+    // User transaction that attempts to mutate an object it does not own will fail to sign.
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let (invalid_owner, _): (_, AccountKeyPair) = get_key_pair();
+
+    let recipient = dbg_addr(2);
+    let gas_object_id = ObjectID::random();
+    let gas_object = Object::with_id_owner_for_testing(gas_object_id, sender);
+
+    let invalid_ownership_object_id = ObjectID::random();
+    let invalid_ownership_object =
+        Object::with_id_owner_for_testing(invalid_ownership_object_id, invalid_owner);
+
+    // used to be init_state_with_objects
+    let (_, authority_state, _) = init_state_with_ids_and_object_basics_with_fullnode(vec![
+        (sender, gas_object_id.clone(), Some(gas_object.clone())),
+        (
+            sender,
+            invalid_ownership_object_id.clone(),
+            Some(invalid_ownership_object.clone()),
+        ),
+    ])
+    .await;
+    let rgp = authority_state.reference_gas_price_for_testing().unwrap();
+
+    let gas_ref = gas_object.compute_object_reference();
+    let invalid_ownership_object_ref = invalid_ownership_object.compute_object_reference();
+
+    let transfer_transaction = init_transfer_transaction(
+        &authority_state,
+        sender,
+        &sender_key,
+        recipient,
+        invalid_ownership_object_ref,
+        gas_ref,
+        rgp * TEST_ONLY_GAS_UNIT_FOR_TRANSFER,
+        rgp,
+    );
+
+    let digest = transfer_transaction.digest();
+
+    let Err(e) = authority_state
+        .dry_exec_transaction(
+            transfer_transaction.transaction_data().clone(),
+            digest.clone(),
+        )
+        // .handle_transaction(&epoch_store, transfer_transaction.clone())
+        .await
+    else {
+        panic!("Expected handling transaction to fail due to IncorrectUserSignature.");
+    };
+    println!("error: {:?}", e);
+
+    assert_eq!(
+        UserInputError::try_from(e).unwrap(),
+        UserInputError::IncorrectUserSignature { error:  format!("Object {:?} is owned by account address {:?}, but given owner/signer address is {:?}", invalid_ownership_object_id, invalid_owner, sender)}
+    );
 }
 
 #[tokio::test]
@@ -3008,6 +3087,37 @@ async fn test_invalid_object_ownership() {
         UserInputError::try_from(e).unwrap(),
         UserInputError::IncorrectUserSignature { error:  format!("Object {:?} is owned by account address {:?}, but given owner/signer address is {:?}", invalid_ownership_object_id, invalid_owner, sender)}
     );
+
+    // now dev inspect
+    //
+    // let transfer_transaction = init_transfer_transaction(
+    //     &authority_state,
+    //     sender,
+    //     &sender_key,
+    //     recipient,
+    //     gas_ref,
+    //     gas_ref,
+    //     rgp * TEST_ONLY_GAS_UNIT_FOR_TRANSFER,
+    //     rgp,
+    // );
+    //
+    // let pt = ProgrammableTransaction {
+    //     inputs: vec![
+    //         CallArg::Object(ObjectArg::ImmOrOwnedObject(invalid_ownership_object_ref)),
+    //         CallArg::Pure(recipient.to_vec()),
+    //     ],
+    //     commands: vec![Command::TransferObjects(
+    //         vec![Argument::Input(0)],
+    //         Argument::Input(1),
+    //     )],
+    // };
+    // let kind = TransactionKind::ProgrammableTransaction(pt);
+    // let DevInspectResults { error, .. } = authority_state
+    //     .dev_inspect_transaction_block(sender, kind, None, None, None, None, None, Some(false))
+    //     .await
+    //     .unwrap();
+    //
+    // println!("error: {:?}", error);
 }
 
 #[tokio::test]
@@ -4069,15 +4179,15 @@ pub async fn publish_object_basics(state: Arc<AuthorityState>) -> (Arc<Authority
 
 #[cfg(test)]
 pub async fn init_state_with_ids_and_object_basics_with_fullnode<
-    I: IntoIterator<Item = (SuiAddress, ObjectID)>,
+    I: IntoIterator<Item = (SuiAddress, ObjectID, Option<Object>)>,
 >(
     objects: I,
 ) -> (Arc<AuthorityState>, Arc<AuthorityState>, ObjectRef) {
     use sui_move_build::BuildConfig;
 
     let (validator, fullnode) = init_state_validator_with_fullnode().await;
-    for (address, object_id) in objects {
-        let obj = Object::with_id_owner_for_testing(object_id, address);
+    for (address, object_id, obj) in objects {
+        let obj = obj.unwrap_or(Object::with_id_owner_for_testing(object_id, address));
         validator.insert_genesis_object(obj.clone()).await;
         fullnode.insert_genesis_object(obj).await;
     }
@@ -5240,7 +5350,8 @@ async fn test_for_inc_201_dev_inspect() {
     let (sender, _sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (_, fullnode, _) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     // Module bytes
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -5285,7 +5396,8 @@ async fn test_for_inc_201_dry_run() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
     let gas_object_id = ObjectID::random();
     let (_, fullnode, _) =
-        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id)]).await;
+        init_state_with_ids_and_object_basics_with_fullnode(vec![(sender, gas_object_id, None)])
+            .await;
 
     // Module bytes
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
