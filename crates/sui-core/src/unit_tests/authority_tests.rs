@@ -296,13 +296,6 @@ async fn test_dry_run_no_gas_big_transfer() {
     assert_eq!(*dry_run_res.effects.status(), SuiExecutionStatus::Success);
 }
 
-// [#tokio::test]
-// async fn test_dry_run_no_arbitrary_functions
-// private, package(public) and entry from another module tests
-
-// test_dry_run_no_arbitrary_values
-// unowned objects?
-
 #[tokio::test]
 async fn test_dev_inspect_object_by_bytes() {
     let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
@@ -1154,6 +1147,125 @@ async fn test_dry_run_dev_inspect_max_gas_version() {
     assert_eq!(effects.status(), &SuiExecutionStatus::Success);
 }
 
+// private, package(public) and entry from another module tests
+#[tokio::test]
+async fn test_dry_run_no_arbitrary_functions() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let gas_object_id = ObjectID::random();
+    let gas_object = Object::with_id_owner_for_testing(gas_object_id, sender);
+    let (validator, fullnode, object_basics) = init_state_with_ids_and_object_basics_with_fullnode(
+        vec![(sender, gas_object_id, Some(gas_object.clone()))],
+    )
+    .await;
+
+    // make an object
+    let init_value = 16_u64;
+    let effects = call_move_(
+        &validator,
+        Some(&fullnode),
+        &gas_object_id,
+        &sender,
+        &sender_key,
+        &object_basics.0,
+        "object_basics",
+        "create",
+        vec![],
+        vec![
+            TestCallArg::Pure(bcs::to_bytes(&(init_value)).unwrap()),
+            TestCallArg::Pure(bcs::to_bytes(&sender).unwrap()),
+        ],
+        false,
+    )
+    .await
+    .unwrap();
+    let created_object_id = effects.created()[0].0 .0;
+    let created_object = validator
+        .get_object(&created_object_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let created_object_bytes = created_object
+        .data
+        .try_as_move()
+        .unwrap()
+        .contents()
+        .to_vec();
+
+    match call_dry_run(
+        &fullnode,
+        &sender,
+        &object_basics.0,
+        "object_basics",
+        "get_value",
+        vec![],
+        vec![TestCallArg::Pure(created_object_bytes.clone())],
+        gas_object.compute_object_reference(),
+    )
+    .await
+    .unwrap()
+    .0
+    .effects
+    {
+        SuiTransactionBlockEffects::V1(effects) => {
+            assert!(effects.status.is_err());
+            assert_eq!(
+                effects.status,
+                SuiExecutionStatus::Failure {
+                    error: "NonEntryFunctionInvoked in command 0".to_string(),
+                }
+            );
+        }
+    };
+}
+
+#[tokio::test]
+async fn test_dry_run_publish() {
+    let (sender, sender_key): (_, AccountKeyPair) = get_key_pair();
+    let (_, authority, _) = init_state_with_ids_and_object_basics_with_fullnode(vec![]).await;
+
+    let rgp = authority.reference_gas_price_for_testing().unwrap();
+    let gas_payment_object_id = ObjectID::random();
+    // Use the max budget to avoid running out of gas.
+    let gas_balance = {
+        let epoch_store = authority.epoch_store_for_testing();
+        let protocol_config = epoch_store.protocol_config();
+        protocol_config.max_tx_gas()
+    };
+    let gas_payment_object =
+        Object::with_id_owner_gas_for_testing(gas_payment_object_id, sender, gas_balance);
+    let gas_payment_object_ref = gas_payment_object.compute_object_reference();
+    authority.insert_genesis_object(gas_payment_object).await;
+
+    let module = file_format::empty_module();
+    let mut module_bytes = Vec::new();
+    module
+        .serialize_with_version(module.version, &mut module_bytes)
+        .unwrap();
+    let module_bytes = vec![module_bytes];
+    let dependencies = vec![]; // no dependencies
+    let data = TransactionData::new_module(
+        sender,
+        gas_payment_object_ref,
+        module_bytes,
+        dependencies,
+        rgp * TEST_ONLY_GAS_UNIT_FOR_PUBLISH,
+        rgp,
+    );
+    let transaction = to_sender_signed_transaction(data, &sender_key);
+    let transaction_data = transaction.transaction_data().clone();
+    let transaction_digest = transaction.digest().clone();
+
+    let result = authority
+        .dry_exec_transaction(transaction_data, transaction_digest)
+        .await
+        .expect("publish failed");
+    match result.0.effects {
+        SuiTransactionBlockEffects::V1(effects) => {
+            assert_eq!(effects.status, SuiExecutionStatus::Success);
+        }
+    }
+}
+
 // Dry run should behave the same as normal mode where object ownership rules are maintained
 #[tokio::test]
 async fn test_dry_run_invalid_object_ownership() {
@@ -1202,7 +1314,6 @@ async fn test_dry_run_invalid_object_ownership() {
             transfer_transaction.transaction_data().clone(),
             digest.clone(),
         )
-        // .handle_transaction(&epoch_store, transfer_transaction.clone())
         .await
     else {
         panic!("Expected handling transaction to fail due to IncorrectUserSignature.");
@@ -4544,6 +4655,50 @@ pub async fn call_dev_inspect(
     authority
         .dev_inspect_transaction_block(*sender, kind, Some(rgp), None, None, None, None, None)
         .await
+}
+
+pub async fn call_dry_run(
+    authority: &AuthorityState,
+    sender: &SuiAddress,
+    package: &ObjectID,
+    module: &str,
+    function: &str,
+    type_arguments: Vec<TypeTag>,
+    test_args: Vec<TestCallArg>,
+    gas_object_ref: ObjectRef,
+) -> SuiResult<(
+    DryRunTransactionBlockResponse,
+    BTreeMap<ObjectID, (ObjectRef, Object, WriteKind)>,
+    TransactionEffects,
+    Option<ObjectID>,
+)> {
+    let mut builder = ProgrammableTransactionBuilder::new();
+    let mut arguments = Vec::with_capacity(test_args.len());
+    for a in test_args {
+        arguments.push(a.to_call_arg(&mut builder, authority).await)
+    }
+
+    builder.command(Command::move_call(
+        *package,
+        Identifier::new(module).unwrap(),
+        Identifier::new(function).unwrap(),
+        type_arguments,
+        arguments,
+    ));
+
+    let rgp = authority.reference_gas_price_for_testing().unwrap();
+
+    let tx = TransactionData::new_programmable(
+        *sender,
+        vec![gas_object_ref],
+        builder.finish(),
+        rgp * TEST_ONLY_GAS_UNIT_FOR_OBJECT_BASICS,
+        rgp,
+    );
+
+    let digest = tx.digest();
+
+    authority.dry_exec_transaction(tx, digest).await
 }
 
 /// This function creates a transaction that calls a 0x02::object_basics::set_value function.
