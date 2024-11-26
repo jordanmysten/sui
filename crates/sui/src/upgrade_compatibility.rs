@@ -14,9 +14,10 @@ use move_binary_format::file_format::{
     AbilitySet, EnumDefinitionIndex, FunctionDefinitionIndex, StructDefinitionIndex, TableIndex,
 };
 use move_binary_format::{
-    compatibility::Compatibility,
+    compatibility::{Compatibility, InclusionCheck},
     compatibility_mode::CompatibilityMode,
     file_format::Visibility,
+    inclusion_mode::InclusionCheckMode,
     normalized::{Enum, Function, Module, Struct},
     CompiledModule,
 };
@@ -29,6 +30,7 @@ use move_compiler::{
     },
     shared::files::{FileName, FilesSourceText},
 };
+use move_core_types::language_storage::ModuleId;
 use move_core_types::{
     account_address::AccountAddress,
     identifier::{IdentStr, Identifier},
@@ -41,6 +43,15 @@ use sui_protocol_config::ProtocolConfig;
 use sui_sdk::SuiClient;
 use sui_types::{base_types::ObjectID, execution_config_utils::to_binary_config};
 
+/// A trait for converting error types of this module to a diagnostic.
+trait DiagFromError {
+    fn diag_from_error(
+        &self,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+        lookup: &IdentifierTableLookup,
+    ) -> Result<Diagnostics, Error>;
+}
+
 /// Errors that can occur during upgrade compatibility checks.
 /// one-to-one related to the underlying trait functions see: [`CompatibilityMode`]
 #[derive(Debug, Clone)]
@@ -50,7 +61,6 @@ pub(crate) enum UpgradeCompatibilityModeError {
     },
     StructMissing {
         name: Identifier,
-        old_struct: Struct,
     },
     StructAbilityMismatch {
         name: Identifier,
@@ -165,6 +175,16 @@ impl UpgradeCompatibilityModeError {
     }
 }
 
+impl DiagFromError for UpgradeCompatibilityModeError {
+    fn diag_from_error(
+        &self,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+        lookup: &IdentifierTableLookup,
+    ) -> Result<Diagnostics, Error> {
+        diag_from_error(self, compiled_unit_with_source, lookup)
+    }
+}
+
 /// A compatibility mode that collects errors as a vector of enums which describe the error causes
 #[derive(Default)]
 pub(crate) struct CliCompatibilityMode {
@@ -185,10 +205,7 @@ impl CompatibilityMode for CliCompatibilityMode {
 
     fn struct_missing(&mut self, name: &Identifier, old_struct: &Struct) {
         self.errors
-            .push(UpgradeCompatibilityModeError::StructMissing {
-                name: name.clone(),
-                old_struct: old_struct.clone(),
-            });
+            .push(UpgradeCompatibilityModeError::StructMissing { name: name.clone() });
     }
 
     fn struct_ability_mismatch(
@@ -351,6 +368,230 @@ impl CompatibilityMode for CliCompatibilityMode {
             .errors
             .into_iter()
             .filter(|e| e.breaks_compatibility(compatability))
+            .collect();
+
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+enum UpgradeInclusionModeError {
+    ModuleMissing {
+        name: Identifier,
+    },
+    FileFormatVersionDowngrade {
+        old_version: u32,
+        new_version: u32,
+    },
+    StructNew {
+        name: Identifier,
+        new_struct: Struct,
+    },
+    StructMissing {
+        name: Identifier,
+    },
+    StructChange {
+        name: Identifier,
+        old_struct: Struct,
+        new_struct: Struct,
+    },
+    EnumNew {
+        name: Identifier,
+        new_enum: Enum,
+    },
+    EnumChange {
+        name: Identifier,
+        new_enum: Enum,
+    },
+    EnumMissing {
+        name: Identifier,
+        old_enum: Enum,
+    },
+    FunctionNew {
+        name: Identifier,
+        new_func: Function,
+    },
+    FunctionChange {
+        name: Identifier,
+        new_func: Function,
+    },
+    FunctionMissing {
+        name: Identifier,
+    },
+    FriendNew {
+        new_friend: ModuleId,
+    },
+    FriendMissing {
+        old_friend: ModuleId,
+    },
+}
+
+impl UpgradeInclusionModeError {
+    fn breaks_compatibility(&self, inclusion: &InclusionCheck) -> bool {
+        match self {
+            UpgradeInclusionModeError::ModuleMissing { .. } => true,
+            UpgradeInclusionModeError::FileFormatVersionDowngrade { .. } => true,
+            UpgradeInclusionModeError::StructNew { .. } => {
+                matches!(inclusion, InclusionCheck::Equal)
+            }
+            UpgradeInclusionModeError::StructMissing { .. } => true,
+            UpgradeInclusionModeError::StructChange { .. } => true,
+            UpgradeInclusionModeError::EnumNew { .. } => matches!(inclusion, InclusionCheck::Equal),
+            UpgradeInclusionModeError::EnumChange { .. } => true,
+            UpgradeInclusionModeError::EnumMissing { .. } => true,
+            UpgradeInclusionModeError::FunctionNew { .. } => {
+                matches!(inclusion, InclusionCheck::Equal)
+            }
+            UpgradeInclusionModeError::FunctionChange { .. } => true,
+            UpgradeInclusionModeError::FunctionMissing { .. } => true,
+            UpgradeInclusionModeError::FriendNew { .. } => {
+                matches!(inclusion, InclusionCheck::Equal)
+            }
+            UpgradeInclusionModeError::FriendMissing { .. } => true,
+        }
+    }
+}
+
+impl DiagFromError for UpgradeInclusionModeError {
+    fn diag_from_error(
+        &self,
+        compiled_unit_with_source: &CompiledUnitWithSource,
+        lookup: &IdentifierTableLookup,
+    ) -> Result<Diagnostics, Error> {
+        match self {
+            _ => todo!(),
+            // UpgradeInclusionModeError::ModuleMissing { .. } => {
+            //     unimplemented!("handled in outer function")
+            // }
+            // UpgradeInclusionModeError::FileFormatVersionDowngrade { .. } => file_,
+            // UpgradeInclusionModeError::StructNew { .. } => {}
+            // UpgradeInclusionModeError::StructMissing { .. } => {}
+            // UpgradeInclusionModeError::StructChange { .. } => {}
+            // UpgradeInclusionModeError::EnumNew { .. } => {}
+            // UpgradeInclusionModeError::EnumChange { .. } => {}
+            // UpgradeInclusionModeError::EnumMissing { .. } => {}
+            // UpgradeInclusionModeError::FunctionNew { .. } => {}
+            // UpgradeInclusionModeError::FunctionChange { .. } => {}
+            // UpgradeInclusionModeError::FunctionMissing { .. } => {}
+            // UpgradeInclusionModeError::FriendNew { .. } => {}
+            // UpgradeInclusionModeError::FriendMissing { .. } => {}
+        }
+    }
+}
+
+struct CliInclusionCheckMode {
+    errors: Vec<UpgradeInclusionModeError>,
+}
+
+impl Default for CliInclusionCheckMode {
+    fn default() -> Self {
+        Self { errors: vec![] }
+    }
+}
+
+impl InclusionCheckMode for CliInclusionCheckMode {
+    type Error = Vec<UpgradeInclusionModeError>;
+
+    // ignored address is not populated pre-tx
+    // TODO ?
+    fn module_name_mismatch(&mut self, old_address: &Identifier, new_address: &Identifier) {}
+
+    // ignored address is not populated pre-tx
+    fn module_address_mismatch(
+        &mut self,
+        old_address: &AccountAddress,
+        new_address: &AccountAddress,
+    ) {
+    }
+
+    fn file_format_version_downgrade(&mut self, old_version: u32, new_version: u32) {
+        self.errors
+            .push(UpgradeInclusionModeError::FileFormatVersionDowngrade {
+                old_version,
+                new_version,
+            });
+    }
+
+    fn struct_new(&mut self, name: &Identifier, new_struct: &Struct) {
+        self.errors.push(UpgradeInclusionModeError::StructNew {
+            name: name.clone(),
+            new_struct: new_struct.clone(),
+        });
+    }
+
+    fn struct_change(&mut self, name: &Identifier, old_struct: &Struct, new_struct: &Struct) {
+        self.errors.push(UpgradeInclusionModeError::StructChange {
+            name: name.clone(),
+            old_struct: old_struct.clone(),
+            new_struct: new_struct.clone(),
+        });
+    }
+
+    fn struct_missing(&mut self, name: &Identifier) {
+        self.errors
+            .push(UpgradeInclusionModeError::StructMissing { name: name.clone() });
+    }
+
+    fn enum_new(&mut self, name: &Identifier, new_enum: &Enum) {
+        self.errors.push(UpgradeInclusionModeError::EnumNew {
+            name: name.clone(),
+            new_enum: new_enum.clone(),
+        });
+    }
+
+    fn enum_change(&mut self, name: &Identifier, new_enum: &Enum) {
+        self.errors.push(UpgradeInclusionModeError::EnumChange {
+            name: name.clone(),
+            new_enum: new_enum.clone(),
+        });
+    }
+
+    fn enum_missing(&mut self, name: &Identifier, old_enum: &Enum) {
+        self.errors.push(UpgradeInclusionModeError::EnumMissing {
+            name: name.clone(),
+            old_enum: old_enum.clone(),
+        });
+    }
+
+    fn function_new(&mut self, name: &Identifier, new_func: &Function) {
+        self.errors.push(UpgradeInclusionModeError::FunctionNew {
+            name: name.clone(),
+            new_func: new_func.clone(),
+        });
+    }
+
+    fn function_change(&mut self, name: &Identifier, new_func: &Function) {
+        self.errors.push(UpgradeInclusionModeError::FunctionChange {
+            name: name.clone(),
+            new_func: new_func.clone(),
+        });
+    }
+
+    fn function_missing(&mut self, name: &Identifier) {
+        self.errors
+            .push(UpgradeInclusionModeError::FunctionMissing { name: name.clone() });
+    }
+
+    fn friend_new(&mut self, new_friend: &ModuleId) {
+        self.errors.push(UpgradeInclusionModeError::FriendNew {
+            new_friend: new_friend.clone(),
+        });
+    }
+
+    fn friend_missing(&mut self, old_friend: &ModuleId) {
+        self.errors.push(UpgradeInclusionModeError::FriendMissing {
+            old_friend: old_friend.clone(),
+        });
+    }
+
+    fn finish(self, inclusion: &InclusionCheck) -> Result<(), Self::Error> {
+        let errors: Vec<UpgradeInclusionModeError> = self
+            .errors
+            .into_iter()
+            .filter(|e| e.breaks_compatibility(inclusion))
             .collect();
 
         if !errors.is_empty() {
@@ -523,37 +764,133 @@ fn compare_packages(
         .map(|m| (m.self_id().name().to_owned(), table_index(m)))
         .collect();
 
-    let errors: Vec<(Identifier, UpgradeCompatibilityModeError)> = existing_modules
-        .iter()
-        .flat_map(|existing_module| {
+    // TODO insert policy check here
+    let (files, diags) = if true {
+        let errors: Vec<(Identifier, UpgradeCompatibilityModeError)> = existing_modules
+            .iter()
+            .flat_map(|existing_module| {
+                let name = existing_module.self_id().name().to_owned();
+
+                // find the new module with the same name
+                match new_modules_map.get(&name) {
+                    Some(new_module) => {
+                        let compatible = Compatibility::upgrade_check()
+                            .check_with_mode::<CliCompatibilityMode>(
+                                &Module::new(existing_module),
+                                &Module::new(new_module),
+                            );
+
+                        if let Err(errors) = compatible {
+                            errors.into_iter().map(|e| (name.to_owned(), e)).collect()
+                        } else {
+                            vec![]
+                        }
+                    }
+                    None => vec![(
+                        name.clone(),
+                        UpgradeCompatibilityModeError::ModuleMissing { name },
+                    )],
+                }
+            })
+            .collect();
+
+        compare_(errors, new_package, lookup)?
+    } else {
+        let diags = vec![];
+        for existing_module in existing_modules {
             let name = existing_module.self_id().name().to_owned();
 
-            // find the new module with the same name
             match new_modules_map.get(&name) {
-                Some(new_module) => {
-                    let compatible = Compatibility::upgrade_check()
-                        .check_with_mode::<CliCompatibilityMode>(
-                            &Module::new(existing_module),
-                            &Module::new(new_module),
-                        );
-                    if let Err(errors) = compatible {
-                        errors.into_iter().map(|e| (name.to_owned(), e)).collect()
-                    } else {
-                        vec![]
-                    }
-                }
-                None => vec![(
-                    name.clone(),
-                    UpgradeCompatibilityModeError::ModuleMissing { name },
-                )],
+                Some(new_module) => {}
+                None => {}
             }
-        })
-        .collect();
+        }
 
-    if errors.is_empty() {
-        return Ok(());
+        // TODO insert policy check here
+        let errors: Vec<(Identifier, UpgradeInclusionModeError)> = existing_modules
+            .iter()
+            .flat_map(|existing_module| {
+                let name = existing_module.self_id().name().to_owned();
+
+                // find the new module with the same name
+                match new_modules_map.get(&name) {
+                    Some(new_module) => {
+                        let compiled_unit_with_source = new_package
+                            .package
+                            .get_module_by_name_from_root(name.as_str())
+                            .context("Unable to get module")
+                            .unwrap();
+
+                        let policy = 0;
+                        match policy {
+                            0 => InclusionCheck::Equal
+                                .check_with_mode::<CliInclusionCheckMode>(
+                                    &Module::new(existing_module),
+                                    &Module::new(new_module),
+                                )
+                                .map_err(|e| {
+                                    e.into_iter()
+                                        .map(|e| {
+                                            e.diag_from_error(
+                                                compiled_unit_with_source,
+                                                lookup.get(name).unwrap(),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                            _ => Compatibility::upgrade_check()
+                                .check_with_mode::<CliCompatibilityMode>(
+                                    &Module::new(existing_module),
+                                    &Module::new(new_module),
+                                )
+                                .map_err(|e| {
+                                    e.into_iter()
+                                        .map(|e| {
+                                            e.diag_from_error(
+                                                compiled_unit_with_source,
+                                                &lookup[&name],
+                                            )
+                                        })
+                                        .collect::<Vec<_>>()
+                                }),
+                        }
+                    }
+                    None => vec![(
+                        name.clone(),
+                        UpgradeInclusionModeError::ModuleMissing { name },
+                    )],
+                }
+            })
+            .collect();
+
+        // TODO insert policy check here
+        compare_(errors, new_package, lookup)?
+    };
+
+    if diags.is_empty() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "{}\nUpgrade failed, this package requires changes to be compatible with the existing package. \
+            Its upgrade policy is set to 'Compatible'.", // TODO policy
+            String::from_utf8(report_diagnostics_to_buffer(
+                &files.into(),
+                diags,
+                use_colors()
+            ))
+            .context("Unable to convert buffer to string")?
+        ))
     }
+}
 
+fn compare_<E>(
+    errors: Vec<(Identifier, E)>,
+    new_package: CompiledPackage,
+    lookup: HashMap<Identifier, IdentifierTableLookup>,
+) -> Result<(FilesSourceText, Diagnostics), Error>
+where
+    E: DiagFromError,
+{
     let mut files: FilesSourceText = HashMap::new();
     let mut file_set = HashSet::new();
 
@@ -583,24 +920,10 @@ fn compare_packages(
             file_set.insert(&compiled_unit_with_source.source_path);
         }
 
-        diags.extend(diag_from_error(
-            &err,
-            compiled_unit_with_source,
-            &lookup[&name],
-        )?);
+        diags.extend(err.diag_from_error(compiled_unit_with_source, &lookup[&name])?);
     }
 
-    // use colors but inline
-    Err(anyhow!(
-        "{}\nUpgrade failed, this package requires changes to be compatible with the existing package. \
-        Its upgrade policy is set to 'Compatible'.",
-        String::from_utf8(report_diagnostics_to_buffer(
-            &files.into(),
-            diags,
-            use_colors()
-        ))
-        .context("Unable to convert buffer to string")?
-    ))
+    Ok((files, diags))
 }
 
 /// Convert an error to a diagnostic using the specific error type's function.
@@ -689,6 +1012,34 @@ fn diag_from_error(
         ),
         _ => todo!("Implement diag_from_error for {:?}", error),
     }
+}
+
+fn module_missing_diag(name: &Identifier) -> Result<Diagnostics, Error> {
+    let mut diags = Diagnostics::new();
+
+    diags.add(Diagnostic::new(
+        Declarations::PublicMissing,
+        (
+            Loc::default(),
+            format!("Module '{name}' is missing", name = name),
+        ),
+        Vec::<(Loc, String)>::new(),
+        vec![
+            format!(
+                "Module is missing expected module '{name}', but found none",
+                name = name
+            ),
+            "Modules are part of a package's public interface and cannot be removed \
+                or changed during an upgrade."
+                .to_string(),
+            format!(
+                "add missing module '{name}' back to the package.",
+                name = name
+            ),
+        ],
+    ));
+
+    Ok(diags)
 }
 
 /// Return a diagnostic for a missing definition.

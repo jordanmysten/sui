@@ -421,7 +421,7 @@ impl InclusionCheck {
         // Enum checks
         for (name, old_enum) in &old_module.enums {
             let Some(new_enum) = new_module.enums.get(name) else {
-                context.enum_missing(name);
+                context.enum_missing(name, old_enum);
                 continue;
             };
 

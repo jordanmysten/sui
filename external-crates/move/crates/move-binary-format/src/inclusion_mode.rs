@@ -18,7 +18,7 @@ pub trait InclusionCheckMode: Default {
     fn struct_missing(&mut self, name: &Identifier);
     fn enum_new(&mut self, name: &Identifier, new_enum: &Enum);
     fn enum_change(&mut self, name: &Identifier, new_enum: &Enum);
-    fn enum_missing(&mut self, name: &Identifier);
+    fn enum_missing(&mut self, name: &Identifier, old_enum: &Enum);
     fn function_new(&mut self, name: &Identifier, new_func: &Function);
     fn function_change(&mut self, name: &Identifier, new_func: &Function);
     fn function_missing(&mut self, name: &Identifier);
@@ -26,7 +26,7 @@ pub trait InclusionCheckMode: Default {
     fn friend_new(&mut self, _new_friend: &ModuleId);
     fn friend_missing(&mut self, _old_friend: &ModuleId);
 
-    fn finish(&self, inclusion: &InclusionCheck) -> Result<(), Self::Error>;
+    fn finish(self, inclusion: &InclusionCheck) -> Result<(), Self::Error>;
 }
 
 pub struct InclusionCheckExecutionMode {
@@ -89,7 +89,7 @@ impl InclusionCheckMode for InclusionCheckExecutionMode {
         self.is_equal = false;
     }
 
-    fn enum_missing(&mut self, _name: &Identifier) {
+    fn enum_missing(&mut self, _name: &Identifier, _old_enum: &Enum) {
         self.is_subset = false;
         self.is_equal = false;
     }
@@ -117,7 +117,7 @@ impl InclusionCheckMode for InclusionCheckExecutionMode {
         self.is_equal = false;
     }
 
-    fn finish(&self, inclusion: &InclusionCheck) -> Result<(), Self::Error> {
+    fn finish(self, inclusion: &InclusionCheck) -> Result<(), Self::Error> {
         match inclusion {
             InclusionCheck::Subset if !self.is_subset => Err(()),
             InclusionCheck::Equal if !self.is_equal => Err(()),
