@@ -58,6 +58,26 @@ fn test_enum() {
 }
 
 #[test]
+fn test_additive() {
+    let (pkg_v1, pkg_v2) = get_packages("additive_errors");
+    let result = compare_packages(pkg_v1, pkg_v2);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_snapshot!(normalize_path(err.to_string()));
+}
+
+#[test]
+fn test_deponly() {
+    let (pkg_v1, pkg_v2) = get_packages("deponly_errors");
+    let result = compare_packages(pkg_v1, pkg_v2);
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert_snapshot!(normalize_path(err.to_string()));
+}
+
+#[test]
 fn test_friend_link_ok() {
     let (pkg_v1, pkg_v2) = get_packages("friend_linking");
     // upgrade compatibility ignores friend linking

@@ -478,10 +478,8 @@ impl InclusionCheck {
             {
                 Some(new_func) => {
                     new_functions_set.remove(name);
-                    if old_func == new_func {
-                        continue;
-                    } else {
-                        context.function_change(name, new_func);
+                    if old_func != new_func {
+                        context.function_change(name, old_func, new_func);
                     }
                 }
                 _ => {
