@@ -4,9 +4,14 @@
 use crate::upgrade_compatibility::{compare_packages, missing_module_diag};
 use insta::assert_snapshot;
 use move_binary_format::CompiledModule;
+use move_command_line_common::files::FileHash;
+use move_compiler::diagnostics::report_diagnostics_to_buffer;
+use move_compiler::shared::files::{FileName, FilesSourceText};
 use move_core_types::identifier::Identifier;
+use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 use sui_move_build::BuildConfig;
 use sui_move_build::CompiledPackage;
 use sui_types::move_package::UpgradePolicy;
@@ -87,16 +92,30 @@ fn test_entry_linking_ok() {
 
 #[test]
 fn test_malformed_toml() {
-    for malformed_pkg in &["empty", "whitespace"] {
+    /// note: the first examples empty and whitespace shouldn't occur in practice
+    /// since a Move.toml which is empty will not build
+    for malformed_pkg in ["empty", "whitespace", "addresses_first"] {
         let move_pkg_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/unit_tests/fixtures/upgrade_errors/malformed_move_toml/")
             .join(malformed_pkg);
-        assert!(
-            missing_module_diag(&Identifier::from_str("identifier").unwrap(), &move_pkg_path)
-                .is_ok(),
-            "Unable to give diag for: {}",
-            malformed_pkg
-        );
+        let result =
+            missing_module_diag(&Identifier::from_str("identifier").unwrap(), &move_pkg_path);
+
+        let move_toml: Arc<str> = fs::read_to_string(move_pkg_path.join("Move.toml"))
+            .unwrap()
+            .into();
+        let file_hash = FileHash::new(&move_toml);
+        let mut files = FilesSourceText::new();
+        let filename = FileName::from(move_pkg_path.join("Move.toml").to_string_lossy());
+        files.insert(file_hash, (filename, move_toml));
+
+        let output = String::from_utf8(report_diagnostics_to_buffer(
+            &files.into(),
+            result.unwrap(),
+            false,
+        ))
+        .unwrap();
+        assert_snapshot!(malformed_pkg, output);
     }
 }
 
