@@ -94,7 +94,12 @@ fn test_entry_linking_ok() {
 fn test_malformed_toml() {
     /// note: the first examples empty and whitespace shouldn't occur in practice
     /// since a Move.toml which is empty will not build
-    for malformed_pkg in ["empty", "whitespace", "addresses_first"] {
+    for malformed_pkg in [
+        "empty",
+        "whitespace",
+        "addresses_first",
+        "starts_second_line",
+    ] {
         let move_pkg_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("src/unit_tests/fixtures/upgrade_errors/malformed_move_toml/")
             .join(malformed_pkg);
