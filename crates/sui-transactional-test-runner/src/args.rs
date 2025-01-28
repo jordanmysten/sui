@@ -8,6 +8,7 @@ use anyhow::{bail, ensure};
 use clap;
 use clap::{Args, Parser};
 use move_compiler::editions::Flavor;
+use move_core_types::account_address::AccountAddress;
 use move_core_types::parsing::{
     parser::Parser as MoveCLParser,
     parser::{parse_u256, parse_u64},
@@ -338,6 +339,7 @@ impl<ExtraValueArgs: ParsableValue, ExtraRunArgs: Parser> clap::Parser
 #[derive(Clone, Debug)]
 pub enum SuiExtraValueArgs {
     Object(FakeID, Option<SequenceNumber>),
+    FakeID(FakeID),
     Digest(String),
     Receiving(FakeID, Option<SequenceNumber>),
     ImmShared(FakeID, Option<SequenceNumber>),
@@ -348,6 +350,9 @@ pub enum SuiValue {
     MoveValue(MoveValue),
     Object(FakeID, Option<SequenceNumber>),
     ObjVec(Vec<(FakeID, Option<SequenceNumber>)>),
+    ObjectConcrete(FakeID, MoveValue),
+    // TODO verison?
+    FakeID(FakeID),
     Digest(String),
     Receiving(FakeID, Option<SequenceNumber>),
     ImmShared(FakeID, Option<SequenceNumber>),
@@ -359,6 +364,13 @@ impl SuiExtraValueArgs {
     ) -> anyhow::Result<Self> {
         let (fake_id, version) = Self::parse_receiving_or_object_value(parser, "object")?;
         Ok(SuiExtraValueArgs::Object(fake_id, version))
+    }
+
+    fn parse_fake_id<'a, I: Iterator<Item = (ValueToken, &'a str)>>(
+        parser: &mut MoveCLParser<'a, ValueToken, I>,
+    ) -> anyhow::Result<Self> {
+        let (fake_id, _) = Self::parse_receiving_or_object_value(parser, "fakeid")?;
+        Ok(SuiExtraValueArgs::FakeID(fake_id))
     }
 
     fn parse_receiving_value<'a, I: Iterator<Item = (ValueToken, &'a str)>>(
@@ -428,6 +440,10 @@ impl SuiValue {
             SuiValue::MoveValue(v) => v,
             SuiValue::Object(_, _) => panic!("unexpected nested Sui object in args"),
             SuiValue::ObjVec(_) => panic!("unexpected nested Sui object vector in args"),
+            SuiValue::ObjectConcrete(_, _) => {
+                panic!("unexpected nested Sui object concrete in args")
+            }
+            SuiValue::FakeID(_) => panic!("unexpected nested Sui fake ID in args"),
             SuiValue::Digest(_) => panic!("unexpected nested Sui package digest in args"),
             SuiValue::Receiving(_, _) => panic!("unexpected nested Sui receiving object in args"),
             SuiValue::ImmShared(_, _) => panic!("unexpected nested Sui shared object in args"),
@@ -439,6 +455,10 @@ impl SuiValue {
             SuiValue::MoveValue(_) => panic!("unexpected nested non-object value in args"),
             SuiValue::Object(id, version) => (id, version),
             SuiValue::ObjVec(_) => panic!("unexpected nested Sui object vector in args"),
+            SuiValue::ObjectConcrete(_, _) => {
+                panic!("unexpected nested Sui object concrete in args")
+            }
+            SuiValue::FakeID(_) => panic!("unexpected nested Sui fake ID in args 2"),
             SuiValue::Digest(_) => panic!("unexpected nested Sui package digest in args"),
             SuiValue::Receiving(_, _) => panic!("unexpected nested Sui receiving object in args"),
             SuiValue::ImmShared(_, _) => panic!("unexpected nested Sui shared object in args"),
@@ -527,6 +547,18 @@ impl SuiValue {
             SuiValue::Object(fake_id, version) => {
                 CallArg::Object(Self::object_arg(fake_id, version, test_adapter)?)
             }
+            SuiValue::ObjectConcrete(fake_id, v) => match fake_id {
+                FakeID::Known(_) => panic!("FakeID::Known is not supported as an input"),
+                FakeID::Enumerated(id, version) => {
+                    CallArg::Pure(bcs::to_bytes(&(id, version, v)).unwrap())
+                }
+            },
+            SuiValue::FakeID(fake_id) => match fake_id {
+                FakeID::Known(_) => panic!("FakeID::Known is not supported as an input"),
+                FakeID::Enumerated(id, version) => {
+                    CallArg::Pure(bcs::to_bytes(&(id, version)).unwrap())
+                }
+            },
             SuiValue::MoveValue(v) => CallArg::Pure(v.simple_serialize().unwrap()),
             SuiValue::Receiving(fake_id, version) => {
                 CallArg::Object(Self::receiving_arg(fake_id, version, test_adapter)?)
@@ -573,6 +605,7 @@ impl ParsableValue for SuiExtraValueArgs {
         match parser.peek()? {
             (ValueToken::Ident, "object") => Some(Self::parse_object_value(parser)),
             (ValueToken::Ident, "digest") => Some(Self::parse_digest_value(parser)),
+            (ValueToken::Ident, "fakeid") => Some(Self::parse_fake_id(parser)),
             (ValueToken::Ident, "receiving") => Some(Self::parse_receiving_value(parser)),
             (ValueToken::Ident, "immshared") => Some(Self::parse_read_shared_value(parser)),
             _ => None,
@@ -596,9 +629,24 @@ impl ParsableValue for SuiExtraValueArgs {
     }
 
     fn concrete_struct(values: Vec<Self::ConcreteValue>) -> anyhow::Result<Self::ConcreteValue> {
-        Ok(SuiValue::MoveValue(MoveValue::Struct(MoveStruct(
-            values.into_iter().map(|v| v.assert_move_value()).collect(),
-        ))))
+        // first element is fake id
+        if let SuiValue::FakeID(fake_id) = &values[0] {
+            let fake_id = *fake_id;
+
+            let address = MoveValue::Address(AccountAddress::ZERO);
+            let values = values
+                .into_iter()
+                .skip(1)
+                .map(|v| v.assert_move_value())
+                .collect::<Vec<_>>();
+            Ok(SuiValue::MoveValue(MoveValue::Struct(MoveStruct(
+                vec![address].into_iter().chain(values).collect(),
+            ))))
+        } else {
+            Ok(SuiValue::MoveValue(MoveValue::Struct(MoveStruct(
+                values.into_iter().map(|v| v.assert_move_value()).collect(),
+            ))))
+        }
     }
 
     fn into_concrete_value(
@@ -607,6 +655,7 @@ impl ParsableValue for SuiExtraValueArgs {
     ) -> anyhow::Result<Self::ConcreteValue> {
         match self {
             SuiExtraValueArgs::Object(id, version) => Ok(SuiValue::Object(id, version)),
+            SuiExtraValueArgs::FakeID(id) => Ok(SuiValue::FakeID(id)),
             SuiExtraValueArgs::Digest(pkg) => Ok(SuiValue::Digest(pkg)),
             SuiExtraValueArgs::Receiving(id, version) => Ok(SuiValue::Receiving(id, version)),
             SuiExtraValueArgs::ImmShared(id, version) => Ok(SuiValue::ImmShared(id, version)),

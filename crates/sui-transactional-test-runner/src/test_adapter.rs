@@ -1144,6 +1144,10 @@ impl<'a> MoveTestAdapter<'a> for SuiTestAdapter {
                     }
                     SuiValue::Digest(_) => bail!("digest is not supported as an input"),
                     SuiValue::ObjVec(_) => bail!("obj vec is not supported as an input"),
+                    SuiValue::ObjectConcrete(_, _) => {
+                        bail!("concrete object is not supported as an input")
+                    }
+                    SuiValue::FakeID(_) => bail!("fake id is not supported as an input"),
                     SuiValue::Receiving(_, _) => bail!("receiving is not supported as an input"),
                     SuiValue::ImmShared(_, _) => {
                         bail!("read-only shared object is not supported as an input")
