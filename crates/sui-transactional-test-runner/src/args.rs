@@ -350,7 +350,6 @@ pub enum SuiValue {
     MoveValue(MoveValue),
     Object(FakeID, Option<SequenceNumber>),
     ObjVec(Vec<(FakeID, Option<SequenceNumber>)>),
-    ObjectConcrete(FakeID, MoveValue),
     // TODO verison?
     FakeID(FakeID),
     Digest(String),
@@ -440,9 +439,6 @@ impl SuiValue {
             SuiValue::MoveValue(v) => v,
             SuiValue::Object(_, _) => panic!("unexpected nested Sui object in args"),
             SuiValue::ObjVec(_) => panic!("unexpected nested Sui object vector in args"),
-            SuiValue::ObjectConcrete(_, _) => {
-                panic!("unexpected nested Sui object concrete in args")
-            }
             SuiValue::FakeID(_) => panic!("unexpected nested Sui fake ID in args"),
             SuiValue::Digest(_) => panic!("unexpected nested Sui package digest in args"),
             SuiValue::Receiving(_, _) => panic!("unexpected nested Sui receiving object in args"),
@@ -455,9 +451,6 @@ impl SuiValue {
             SuiValue::MoveValue(_) => panic!("unexpected nested non-object value in args"),
             SuiValue::Object(id, version) => (id, version),
             SuiValue::ObjVec(_) => panic!("unexpected nested Sui object vector in args"),
-            SuiValue::ObjectConcrete(_, _) => {
-                panic!("unexpected nested Sui object concrete in args")
-            }
             SuiValue::FakeID(_) => panic!("unexpected nested Sui fake ID in args 2"),
             SuiValue::Digest(_) => panic!("unexpected nested Sui package digest in args"),
             SuiValue::Receiving(_, _) => panic!("unexpected nested Sui receiving object in args"),
@@ -547,12 +540,6 @@ impl SuiValue {
             SuiValue::Object(fake_id, version) => {
                 CallArg::Object(Self::object_arg(fake_id, version, test_adapter)?)
             }
-            SuiValue::ObjectConcrete(fake_id, v) => match fake_id {
-                FakeID::Known(_) => panic!("FakeID::Known is not supported as an input"),
-                FakeID::Enumerated(id, version) => {
-                    CallArg::Pure(bcs::to_bytes(&(id, version, v)).unwrap())
-                }
-            },
             SuiValue::FakeID(fake_id) => match fake_id {
                 FakeID::Known(_) => panic!("FakeID::Known is not supported as an input"),
                 FakeID::Enumerated(id, version) => {
@@ -631,8 +618,6 @@ impl ParsableValue for SuiExtraValueArgs {
     fn concrete_struct(values: Vec<Self::ConcreteValue>) -> anyhow::Result<Self::ConcreteValue> {
         // first element is fake id
         if let SuiValue::FakeID(fake_id) = &values[0] {
-            let fake_id = *fake_id;
-
             let address = MoveValue::Address(AccountAddress::ZERO);
             let values = values
                 .into_iter()
